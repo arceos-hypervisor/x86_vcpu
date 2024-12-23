@@ -242,7 +242,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsGuestNW::RSP.write(rsp).unwrap()
     }
 
-    /// Translate guest virtual addr to linear addr    
+    /// Translate guest virtual addr to linear addr
     pub fn gla2gva(&self, guest_rip: GuestVirtAddr) -> GuestVirtAddr {
         let cpu_mode = self.get_cpu_mode();
         let seg_base;
@@ -501,7 +501,12 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsGuestNW::CR3.write(0)?;
         VmcsGuestNW::DR7.write(0x400)?;
         VmcsGuestNW::RSP.write(0)?;
-        VmcsGuestNW::RIP.write(entry.as_usize())?;
+        VmcsGuestNW::RIP.write(entry.as_usize() & 0xffff)?;
+
+        VmcsGuest16::CS_SELECTOR.write(((entry.as_usize() >> 4) & 0xf000) as u16)?;
+        // Hypervisor on Intel requires 'base' to be 'selector * 16' in real mode.
+        VmcsGuestNW::CS_BASE.write(entry.as_usize() & 0xf0000)?;
+
         VmcsGuestNW::RFLAGS.write(0x2)?;
         VmcsGuestNW::PENDING_DBG_EXCEPTIONS.write(0)?;
         VmcsGuestNW::IA32_SYSENTER_ESP.write(0)?;
