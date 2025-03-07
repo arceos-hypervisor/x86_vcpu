@@ -8,6 +8,7 @@ log = "0.4.19"
 cfg-if = "1.0"
 bitflags = "2.2"
 bit_field = "0.10"
+paste = "1.0.15"
 x86 = "0.52"
 x86_64 = "0.15"
 raw-cpuid = "11.0"
@@ -21,7 +22,10 @@ crate_interface = "0.1"
 axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git", branch = "inject_interrupt" }
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", branch = "inject_interrupt" }
 
+x86_vlapic = { path = "../x86_vlapic" }
+
 [features]
 default = ["vmx"]
+tracing = []
 vmx = []
 amd = []
