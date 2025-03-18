@@ -40,6 +40,19 @@ pub struct GeneralRegisters {
 }
 
 impl GeneralRegisters {
+    pub fn from_context(context: &crate::context::LinuxContext) -> Self {
+        Self {
+            rax: 0,
+            rbx: context.rbx,
+            rbp: context.rbp,
+            r12: context.r12,
+            r13: context.r13,
+            r14: context.r14,
+            r15: context.r15,
+            ..Default::default()
+        }
+    }
+
     /// Returns the value of the general-purpose register corresponding to the given index.
     ///
     /// The mapping of indices to registers is as follows:

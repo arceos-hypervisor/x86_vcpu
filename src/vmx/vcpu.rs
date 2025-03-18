@@ -16,11 +16,14 @@ use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
 use super::VmxExitInfo;
 use super::as_axerr;
 use super::definitions::VmxExitReason;
+use super::read_vmcs_revision_id;
 use super::structs::{IOBitmap, MsrBitmap, VmxRegion};
 use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
+use crate::LinuxContext;
+use crate::segmentation::Segment;
 use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
@@ -155,27 +158,34 @@ pub struct VmxVcpu<H: AxVCpuHal> {
     xstate: XState,
     entry: Option<GuestPhysAddr>,
     ept_root: Option<HostPhysAddr>,
-    // is_host: bool, temporary removed because we don't care about type 1.5 now
+    host_ctx: Option<LinuxContext>,
 }
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
     /// Create a new [`VmxVcpu`].
-    pub fn new() -> AxResult<Self> {
-        let vmcs_revision_id = super::read_vmcs_revision_id();
+    pub fn new(ctx: Option<LinuxContext>) -> AxResult<Self> {
         let vcpu = Self {
-            guest_regs: GeneralRegisters::default(),
+            guest_regs: if let Some(ctx) = ctx {
+                GeneralRegisters::from_context(&ctx)
+            } else {
+                GeneralRegisters::default()
+            },
             host_stack_top: 0,
             launched: false,
-            vmcs: VmxRegion::new(vmcs_revision_id, false)?,
+            vmcs: VmxRegion::new(read_vmcs_revision_id(), false)?,
             io_bitmap: IOBitmap::passthrough_all()?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
             xstate: XState::new(),
             entry: None,
             ept_root: None,
-            // is_host: false,
+            host_ctx: ctx,
         };
-        info!("[HV] created VmxVcpu(vmcs: {:#x})", vcpu.vmcs.phys_addr());
+        info!(
+            "[HV] created {} VmxVcpu(vmcs: {:#x})",
+            if ctx.is_some() { "Host" } else { "Guest" },
+            vcpu.vmcs.phys_addr()
+        );
         Ok(vcpu)
     }
 
@@ -501,13 +511,20 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     }
 
     fn setup_vmcs(&mut self, entry: GuestPhysAddr, ept_root: HostPhysAddr) -> AxResult {
+        // If self.host_ctx.is_none(), it means this is a vcpu for guest VM.
+        let is_guest = self.host_ctx.is_none();
         let paddr = self.vmcs.phys_addr().as_usize() as u64;
         unsafe {
             vmx::vmclear(paddr).map_err(as_axerr)?;
         }
         self.bind_to_current_processor()?;
-        self.setup_vmcs_guest(entry)?;
-        self.setup_vmcs_control(ept_root, true)?;
+        if is_guest {
+            self.setup_vmcs_guest(entry)?;
+        } else {
+            self.setup_vmcs_guest_from_ctx()?;
+        }
+
+        self.setup_vmcs_control(ept_root, is_guest)?;
         self.unbind_from_current_processor()?;
         Ok(())
     }
@@ -545,6 +562,70 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsHostNW::IA32_SYSENTER_ESP.write(0)?;
         VmcsHostNW::IA32_SYSENTER_EIP.write(0)?;
         VmcsHost32::IA32_SYSENTER_CS.write(0)?;
+
+        Ok(())
+    }
+
+    /// Indeed, this function can be combined with `setup_vmcs_guest`,
+    /// to avoid complexity and minimize the modification,
+    /// we just keep them separated.
+    fn setup_vmcs_guest_from_ctx(&mut self) -> AxResult {
+        let linux = self.host_ctx.expect("Host context is not set");
+
+        self.set_cr(0, linux.cr0.bits());
+        self.set_cr(4, linux.cr4.bits());
+        self.set_cr(3, linux.cr3);
+
+        macro_rules! set_guest_segment {
+            ($seg: expr, $reg: ident) => {{
+                use VmcsGuest16::*;
+                use VmcsGuest32::*;
+                use VmcsGuestNW::*;
+                concat_idents!($reg, _SELECTOR).write($seg.selector.bits())?;
+                concat_idents!($reg, _BASE).write($seg.base as _)?;
+                concat_idents!($reg, _LIMIT).write($seg.limit)?;
+                concat_idents!($reg, _ACCESS_RIGHTS).write($seg.access_rights.bits())?;
+            }};
+        }
+
+        set_guest_segment!(linux.es, ES);
+        set_guest_segment!(linux.cs, CS);
+        set_guest_segment!(linux.ss, SS);
+        set_guest_segment!(linux.ds, DS);
+        set_guest_segment!(linux.fs, FS);
+        set_guest_segment!(linux.gs, GS);
+        set_guest_segment!(linux.tss, TR);
+        set_guest_segment!(Segment::invalid(), LDTR);
+
+        VmcsGuestNW::GDTR_BASE.write(linux.gdt.base.as_u64() as _)?;
+        VmcsGuest32::GDTR_LIMIT.write(linux.gdt.limit as _)?;
+        VmcsGuestNW::IDTR_BASE.write(linux.idt.base.as_u64() as _)?;
+        VmcsGuest32::IDTR_LIMIT.write(linux.idt.limit as _)?;
+
+        debug!(
+            "this is the linux rip: {:#x} rsp:{:#x}",
+            linux.rip, linux.rsp
+        );
+        VmcsGuestNW::RSP.write(linux.rsp as _)?;
+        VmcsGuestNW::RIP.write(linux.rip as _)?;
+        VmcsGuestNW::RFLAGS.write(0x2)?;
+
+        VmcsGuest32::IA32_SYSENTER_CS.write(Msr::IA32_SYSENTER_CS.read() as _)?;
+        VmcsGuestNW::IA32_SYSENTER_ESP.write(Msr::IA32_SYSENTER_ESP.read() as _)?;
+        VmcsGuestNW::IA32_SYSENTER_EIP.write(Msr::IA32_SYSENTER_EIP.read() as _)?;
+
+        VmcsGuestNW::DR7.write(0x400)?;
+        VmcsGuest64::IA32_DEBUGCTL.write(0)?;
+
+        VmcsGuest32::ACTIVITY_STATE.write(0)?;
+        VmcsGuest32::INTERRUPTIBILITY_STATE.write(0)?;
+        VmcsGuestNW::PENDING_DBG_EXCEPTIONS.write(0)?;
+
+        VmcsGuest64::LINK_PTR.write(u64::MAX)?;
+        VmcsGuest32::VMX_PREEMPTION_TIMER_VALUE.write(0)?;
+
+        VmcsGuest64::IA32_PAT.write(linux.pat)?;
+        VmcsGuest64::IA32_EFER.write(linux.efer)?;
 
         Ok(())
     }
@@ -1146,8 +1227,14 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 
     type SetupConfig = ();
 
+    type HostConfig = crate::context::LinuxContext;
+
     fn new(_config: Self::CreateConfig) -> AxResult<Self> {
-        Self::new()
+        Self::new(None)
+    }
+
+    fn new_host(config: Self::HostConfig) -> AxResult<Self> {
+        Self::new(Some(config))
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
