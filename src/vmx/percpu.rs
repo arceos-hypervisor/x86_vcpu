@@ -8,6 +8,7 @@ use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 use crate::msr::Msr;
 use crate::vmx::has_hardware_support;
 use crate::vmx::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion};
+use crate::xstate::XState;
 
 /// Represents the per-CPU state for Virtual Machine Extensions (VMX).
 ///
@@ -49,7 +50,7 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
         }
 
         // Enable XSAVE/XRSTOR.
-        super::vcpu::XState::enable_xsave();
+        XState::enable_xsave();
 
         // Enable VMXON, if required.
         let ctrl = FeatureControl::read();

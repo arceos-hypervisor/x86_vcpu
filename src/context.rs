@@ -8,6 +8,7 @@ use x86_64::{addr::PhysAddr, structures::paging::PhysFrame};
 use crate::msr::Msr;
 use crate::regs::GeneralRegisters;
 use crate::segmentation::{Segment, SegmentAccessRights};
+use crate::xstate::XState;
 
 const SAVED_LINUX_REGS: usize = 8;
 
@@ -45,6 +46,8 @@ pub struct LinuxContext {
     pub kernel_gsbase: u64,
     pub pat: u64,
     pub mtrr_def_type: u64,
+
+    pub xstate: XState,
 }
 
 unsafe impl Send for LinuxContext {}
@@ -87,6 +90,7 @@ impl Default for LinuxContext {
             kernel_gsbase: 0,
             pat: 0,
             mtrr_def_type: 0,
+            xstate: XState::default(),
         }
     }
 }
@@ -107,10 +111,9 @@ impl LinuxContext {
     pub fn load_from(linux_sp: usize) -> Self {
         let regs = unsafe { core::slice::from_raw_parts(linux_sp as *const u64, SAVED_LINUX_REGS) };
         let gdt = sgdt();
-        let idt = sidt();
 
         let mut fs = Segment::from_selector(x86::segmentation::fs(), &gdt);
-        let mut gs = Segment::from_selector(x86::segmentation::gs(), &idt);
+        let mut gs = Segment::from_selector(x86::segmentation::gs(), &gdt);
         fs.base = Msr::IA32_FS_BASE.read();
         gs.base = regs[0];
 
@@ -131,7 +134,7 @@ impl LinuxContext {
             gs,
             tss: Segment::from_selector(unsafe { task::tr() }, &gdt),
             gdt,
-            idt,
+            idt: sidt(),
             cr0: Cr0::read(),
             cr3: Cr3::read().0.start_address().as_u64(),
             cr4: Cr4::read(),
@@ -143,6 +146,7 @@ impl LinuxContext {
             kernel_gsbase: Msr::IA32_KERNEL_GSBASE.read(),
             pat: Msr::IA32_PAT.read(),
             mtrr_def_type: Msr::IA32_MTRR_DEF_TYPE.read(),
+            xstate: XState::new(),
         }
     }
 
@@ -175,18 +179,14 @@ impl LinuxContext {
         let hv_gdt_table: &mut [u64] =
             unsafe { core::slice::from_raw_parts_mut(hv_gdt.base.as_mut_ptr(), entry_count) };
 
-        // let mut hv_gdt = GdtStruct::from_pointer(&GdtStruct::sgdt());
-
         let linux_gdt = &self.gdt;
         let entry_count = (linux_gdt.limit as usize + 1) / size_of::<u64>();
         let linux_gdt_table =
             unsafe { core::slice::from_raw_parts(linux_gdt.base.as_mut_ptr(), entry_count) };
 
-        // let liunx_gdt = GdtStruct::from_pointer(&self.gdt);
         let tss_idx = self.tss.selector.index() as usize;
         hv_gdt_table[tss_idx] = linux_gdt_table[tss_idx];
         hv_gdt_table[tss_idx + 1] = linux_gdt_table[tss_idx + 1];
-        // hv_gdt.load_tss(self.tss.selector);
 
         SegmentAccessRights::set_descriptor_type(
             &mut hv_gdt_table[self.tss.selector.index() as usize],
