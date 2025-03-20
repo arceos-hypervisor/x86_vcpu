@@ -20,10 +20,11 @@ use super::read_vmcs_revision_id;
 use super::structs::{IOBitmap, MsrBitmap, VmxRegion};
 use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
-    VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
+    VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, interrupt_exit_info,
 };
 use crate::LinuxContext;
 use crate::segmentation::Segment;
+use crate::xstate::XState;
 use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
@@ -176,15 +177,20 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             io_bitmap: IOBitmap::passthrough_all()?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
-            xstate: XState::new(),
+            xstate: if let Some(ctx) = ctx {
+                ctx.xstate
+            } else {
+                XState::new()
+            },
             entry: None,
             ept_root: None,
             host_ctx: ctx,
         };
-        info!(
-            "[HV] created {} VmxVcpu(vmcs: {:#x})",
+        debug!(
+            "[HV] created {} VmxVcpu(vmcs: {:#x}) xstate {:#x?}",
             if ctx.is_some() { "Host" } else { "Guest" },
-            vcpu.vmcs.phys_addr()
+            vcpu.vmcs.phys_addr(),
+            vcpu.xstate
         );
         Ok(vcpu)
     }
@@ -202,7 +208,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
     /// Bind this [`VmxVcpu`] to current logical processor.
     pub fn bind_to_current_processor(&self) -> AxResult {
-        debug!(
+        trace!(
             "VmxVcpu bind to current processor vmcs @ {:#x}",
             self.vmcs.phys_addr()
         );
@@ -215,7 +221,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
     /// Unbind this [`VmxVcpu`] from current logical processor.
     pub fn unbind_from_current_processor(&self) -> AxResult {
-        debug!(
+        trace!(
             "VmxVcpu unbind from current processor vmcs @ {:#x}",
             self.vmcs.phys_addr()
         );
@@ -270,7 +276,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         // Handle vm-exits
         let exit_info = self.exit_info().unwrap();
-        // debug!("VM exit: {:#x?}", exit_info);
+        debug!("VM exit: {:#x?}", exit_info);
 
         match self.builtin_vmexit_handler(&exit_info) {
             Some(result) => {
@@ -572,6 +578,12 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     fn setup_vmcs_guest_from_ctx(&mut self) -> AxResult {
         let linux = self.host_ctx.expect("Host context is not set");
 
+        warn!("Linux context: {:#x?}", linux);
+
+        warn!("self xstate {:#x?}", self.xstate);
+
+        warn!("current xstate {:#x?}", XState::new());
+
         self.set_cr(0, linux.cr0.bits());
         self.set_cr(4, linux.cr4.bits());
         self.set_cr(3, linux.cr3);
@@ -718,7 +730,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
-        let mut val = CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
+        let mut val = CpuCtrl2::ENABLE_EPT
+            | CpuCtrl2::UNRESTRICTED_GUEST
+            | CpuCtrl2::ENABLE_USER_WAIT_PAUSE
+            | CpuCtrl2::ENABLE_VM_FUNCTIONS;
         if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers() {
             if features.has_rdtscp() {
                 val |= CpuCtrl2::ENABLE_RDTSCP;
@@ -784,8 +799,14 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsControl32::VMEXIT_MSR_LOAD_COUNT.write(0)?;
         VmcsControl32::VMENTRY_MSR_LOAD_COUNT.write(0)?;
 
-        // VmcsControlNW::CR4_GUEST_HOST_MASK.write(0)?;
+        // TODO: figure out why we mask it.
+        VmcsControlNW::CR4_GUEST_HOST_MASK.write(0)?;
         VmcsControl32::CR3_TARGET_COUNT.write(0)?;
+
+        // 25.6.14 VM-Function Controls
+        // Table 25-10. Definitions of VM-Function Controls
+        // Bit 0: EPTP switching
+        VmcsControl64::VM_FUNCTION_CONTROLS.write(0b1)?;
 
         // Pass-through exceptions (except #UD(6)), don't use I/O bitmap, set MSR bitmaps.
         let exception_bitmap: u32 = 1 << 6;
@@ -982,6 +1003,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             VmxExitReason::XSETBV => Some(self.handle_xsetbv()),
             VmxExitReason::CR_ACCESS => Some(self.handle_cr()),
             VmxExitReason::CPUID => Some(self.handle_cpuid()),
+            VmxExitReason::EXCEPTION_NMI => Some(self.handle_exception_nmi(exit_info)),
             _ => None,
         }
     }
@@ -993,6 +1015,25 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         The value of X is in the range 0–31 and can be determined by consulting the VMX capability MSR IA32_VMX_MISC (see Appendix A.6).
          */
         VmcsGuest32::VMX_PREEMPTION_TIMER_VALUE.write(VMX_PREEMPTION_TIMER_SET_VALUE)?;
+        Ok(())
+    }
+
+    fn handle_exception_nmi(&mut self, exit_info: &VmxExitInfo) -> AxResult {
+        let intr_info = interrupt_exit_info()?;
+        info!(
+            "VM exit: Exception or NMI @ RIP({:#x}, {}): {:#x?}",
+            exit_info.guest_rip, exit_info.exit_instruction_length, intr_info
+        );
+
+        const NON_MASKABLE_INTERRUPT: u8 = 2;
+
+        match intr_info.vector {
+            // ExceptionType::NonMaskableInterrupt
+            NON_MASKABLE_INTERRUPT => unsafe {
+                core::arch::asm!("int {}", const NON_MASKABLE_INTERRUPT)
+            },
+            v => panic!("Unhandled Guest Exception: #{:#x}", v),
+        }
         Ok(())
     }
 

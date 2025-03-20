@@ -90,10 +90,10 @@ impl Segment {
         }
     }
 
-    pub fn from_selector(selector: SegmentSelector, dt: &DescriptorTablePointer) -> Self {
+    pub fn from_selector(selector: SegmentSelector, gdt: &DescriptorTablePointer) -> Self {
         let index = selector.index() as usize;
-        let entry_count = (dt.limit as usize + 1) / size_of::<u64>();
-        let table = unsafe { core::slice::from_raw_parts(dt.base.as_mut_ptr(), entry_count) };
+        let entry_count = (gdt.limit as usize + 1) / size_of::<u64>();
+        let table = unsafe { core::slice::from_raw_parts(gdt.base.as_mut_ptr(), entry_count) };
 
         let entry_value = table[index];
         let entry = DescriptorFlags::from_bits_truncate(entry_value);

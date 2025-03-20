@@ -17,6 +17,8 @@ mod frame;
 
 mod context;
 mod segmentation;
+// mod tables;
+mod xstate;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "vmx")] {
