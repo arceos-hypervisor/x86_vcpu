@@ -660,7 +660,7 @@ pub fn raw_interrupt_exit_info() -> AxResult<u32> {
 }
 
 pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
-    // SDM Vol. 3C, Section 24.9.2
+    // SDM Vol. 3C, Section 25.9.2
     let info = VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()?;
     Ok(VmxInterruptInfo {
         vector: info.get_bits(0..8) as u8,
