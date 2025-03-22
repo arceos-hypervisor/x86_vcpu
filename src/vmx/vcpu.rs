@@ -1,7 +1,9 @@
 use alloc::collections::VecDeque;
-use bit_field::BitField;
+use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
+
+use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::bits64::vmx;
 use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
@@ -9,7 +11,11 @@ use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
+use page_table_entry::x86_64::X64PTE;
+use page_table_multiarch::{PageSize, PagingHandler, PagingResult};
+
+use axaddrspace::EPTTranslator;
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
 
@@ -23,9 +29,11 @@ use super::vmcs::{
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, interrupt_exit_info,
 };
 use crate::LinuxContext;
+use crate::page_table::GuestPageTable64;
+use crate::page_table::GuestPageWalkInfo;
 use crate::segmentation::Segment;
 use crate::xstate::XState;
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
+use crate::{msr::Msr, regs::GeneralRegisters};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
@@ -156,7 +164,11 @@ pub struct VmxVcpu<H: AxVCpuHal> {
     io_bitmap: IOBitmap<H>,
     msr_bitmap: MsrBitmap<H>,
     pending_events: VecDeque<(u8, Option<u32>)>,
-    xstate: XState,
+    // xstate: XState,
+    /// XState used by the guest OS, loaded before running the guest.
+    guest_xstate: XState,
+    /// XState used by the hypervisor itself, stored before running the guest.
+    cur_xstate: XState,
     entry: Option<GuestPhysAddr>,
     ept_root: Option<HostPhysAddr>,
     host_ctx: Option<LinuxContext>,
@@ -177,11 +189,12 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             io_bitmap: IOBitmap::passthrough_all()?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
-            xstate: if let Some(ctx) = ctx {
+            guest_xstate: if let Some(ctx) = ctx {
                 ctx.xstate
             } else {
                 XState::new()
             },
+            cur_xstate: XState::new(),
             entry: None,
             ept_root: None,
             host_ctx: ctx,
@@ -190,7 +203,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             "[HV] created {} VmxVcpu(vmcs: {:#x}) xstate {:#x?}",
             if ctx.is_some() { "Host" } else { "Guest" },
             vcpu.vmcs.phys_addr(),
-            vcpu.xstate
+            vcpu.guest_xstate
         );
         Ok(vcpu)
     }
@@ -340,24 +353,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsGuestNW::RSP.write(rsp).unwrap()
     }
 
-    /// Translate guest virtual addr to linear addr    
-    pub fn gla2gva(&self, guest_rip: GuestVirtAddr) -> GuestVirtAddr {
-        let cpu_mode = self.get_cpu_mode();
-        let seg_base = if cpu_mode == VmCpuMode::Mode64 {
-            0
-        } else {
-            VmcsGuestNW::CS_BASE.read().unwrap()
-        };
-        // debug!(
-        //     "seg_base: {:#x}, guest_rip: {:#x} cpu mode:{:?}",
-        //     seg_base, guest_rip, cpu_mode
-        // );
-        guest_rip + seg_base
-    }
-
     /// Get Translate guest page table info
-    pub fn get_ptw_info(&self) -> GuestPageWalkInfo {
-        let top_entry = VmcsGuestNW::CR3.read().unwrap();
+    pub fn get_pagetable_walk_info(&self) -> GuestPageWalkInfo {
+        let cr3 = VmcsGuestNW::CR3.read().unwrap();
         let level = self.get_paging_level();
         let is_write_access = false;
         let is_inst_fetch = false;
@@ -384,7 +382,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             width = 0;
         }
         GuestPageWalkInfo {
-            top_entry,
+            cr3,
             level,
             width,
             is_user_mode_access,
@@ -445,6 +443,67 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     pub fn set_msr_intercept_of_range(&mut self, msr: u32, intercept: bool) {
         self.msr_bitmap.set_read_intercept(msr, intercept);
         self.msr_bitmap.set_write_intercept(msr, intercept);
+    }
+
+    pub fn read_guest_memory(&self, gva: GuestVirtAddr, len: usize) -> AxResult<Vec<u8>> {
+        debug!("read_guest_memory @{:?} len: {}", gva, len);
+
+        let mut content = Vec::with_capacity(len as usize);
+
+        let mut remained_size = len;
+        let mut addr = gva;
+
+        while remained_size > 0 {
+            let (gpa, _flags, page_size) = self.guest_page_table_query(gva).map_err(|e| {
+                warn!("Failed to query guest page table: {:?}", e);
+                ax_err_type!(BadAddress)
+            })?;
+            let pgoff = page_size.align_offset(addr.into());
+            let read_size = (page_size as usize - pgoff).min(remained_size);
+            addr += read_size;
+            remained_size -= read_size;
+
+            if let Some(hpa) = H::EPTTranslator::guest_phys_to_host_phys(gpa) {
+                let hva_ptr = H::PagingHandler::phys_to_virt(hpa).as_ptr();
+                for i in 0..read_size {
+                    content.push(unsafe { hva_ptr.add(pgoff + i).read() });
+                }
+            } else {
+                return ax_err!(BadAddress);
+            }
+        }
+        debug!("read_guest_memory @{:?} content: {:x?}", gva, content);
+        Ok(content)
+    }
+
+    pub fn decode_instruction(&self, rip: GuestVirtAddr, instr_len: usize) -> AxResult {
+        use alloc::string::String;
+        use iced_x86::{Decoder, DecoderOptions, Formatter, IntelFormatter, MasmFormatter};
+
+        let bytes = self.read_guest_memory(rip, instr_len)?;
+        let mut decoder = Decoder::with_ip(
+            64,
+            bytes.as_slice(),
+            rip.as_usize() as _,
+            DecoderOptions::NONE,
+        );
+        let instr = decoder.decode();
+
+        debug!("Decoded instruction: {:#x?}", instr);
+
+        let mut output = String::new();
+        let mut formattor = IntelFormatter::new();
+        formattor.format(&instr, &mut output);
+
+        debug!("Decoded instruction Intel formatter: {}", output);
+
+        let mut output = String::new();
+        let mut formattor = MasmFormatter::new();
+        formattor.format(&instr, &mut output);
+
+        debug!("Decoded instruction MasmFormatter: {}", output);
+
+        Ok(())
     }
 }
 
@@ -580,7 +639,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         warn!("Linux context: {:#x?}", linux);
 
-        warn!("self xstate {:#x?}", self.xstate);
+        warn!(
+            "self xstate cur {:#x?} guest {:#x?}",
+            self.cur_xstate, self.guest_xstate
+        );
 
         warn!("current xstate {:#x?}", XState::new());
 
@@ -840,6 +902,32 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         }
         level as usize
     }
+
+    /// Translate guest virtual addr to linear addr
+    fn gva_to_linear_addr(&self, vaddr: GuestVirtAddr) -> GuestVirtAddr {
+        let cpu_mode = self.get_cpu_mode();
+        let seg_base = if cpu_mode == VmCpuMode::Mode64 {
+            0
+        } else {
+            VmcsGuestNW::CS_BASE.read().unwrap()
+        };
+        vaddr + seg_base
+    }
+
+    fn guest_page_table_query(
+        &self,
+        gva: GuestVirtAddr,
+    ) -> PagingResult<(GuestPhysAddr, MappingFlags, PageSize)> {
+        let addr = self.gva_to_linear_addr(gva);
+
+        debug!("guest_page_table_query: gva {:?} linear {:?}", gva, addr);
+
+        let guest_ptw_info = self.get_pagetable_walk_info();
+        let guest_page_table: GuestPageTable64<X64PTE, H::PagingHandler, H::EPTTranslator> =
+            GuestPageTable64::construct(&guest_ptw_info);
+
+        guest_page_table.query(addr)
+    }
 }
 
 // Implementaton for type1.5 hypervisor
@@ -1025,6 +1113,11 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             exit_info.guest_rip, exit_info.exit_instruction_length, intr_info
         );
 
+        self.decode_instruction(
+            GuestVirtAddr::from_usize(exit_info.guest_rip),
+            exit_info.exit_instruction_length as _,
+        )?;
+
         const NON_MASKABLE_INTERRUPT: u8 = 2;
 
         match intr_info.vector {
@@ -1113,6 +1206,8 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 res
             }
             LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION => {
+                warn!("handle_cpuid: LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION");
+
                 self.load_guest_xstate();
                 let res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 self.load_host_xstate();
@@ -1201,7 +1296,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 })
                 .ok_or(ax_err_type!(InvalidInput))
                 .and_then(|x| {
-                    self.xstate.guest_xcr0 = x.bits();
+                    self.guest_xstate.xcr0 = x;
                     self.advance_rip(VM_EXIT_INSTR_LEN_XSETBV)
                 })
         } else {
@@ -1210,10 +1305,18 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         }
     }
 
+    /// Save the current host state to the vcpu,
+    /// restore the guest state from the vcpu into registers.
+    ///
+    /// This function is generally called before VM-entry.
     fn load_guest_xstate(&mut self) {
         self.xstate.switch_to_guest();
     }
 
+    /// Save the current guest state to the vcpu,
+    /// restore the host state from the vcpu into registers.
+    ///
+    /// This function is generally called after VM-exit.
     fn load_host_xstate(&mut self) {
         self.xstate.switch_to_host();
     }

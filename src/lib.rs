@@ -14,6 +14,7 @@ pub(crate) mod msr;
 pub(crate) mod regs;
 mod ept;
 mod frame;
+mod page_table;
 
 mod context;
 mod segmentation;
@@ -32,6 +33,5 @@ cfg_if::cfg_if! {
 }
 
 pub use context::LinuxContext;
-pub use ept::GuestPageWalkInfo;
 pub use regs::GeneralRegisters;
 pub use vender::has_hardware_support;
