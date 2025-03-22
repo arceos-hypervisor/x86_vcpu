@@ -6,7 +6,7 @@ use core::{arch::naked_asm, mem::size_of};
 use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::bits64::vmx;
-use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
+use x86::controlregs::Xcr0;
 use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
@@ -765,9 +765,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsControl64::VM_FUNCTION_CONTROLS.write(0b1)?;
 
         // Pass-through exceptions (except #UD(6)), don't use I/O bitmap, set MSR bitmaps.
-        let exception_bitmap: u32 = 1 << 6;
+        // let exception_bitmap: u32 = 1 << 6;
 
-        VmcsControl32::EXCEPTION_BITMAP.write(exception_bitmap)?;
+        // VmcsControl32::EXCEPTION_BITMAP.write(exception_bitmap)?;
+        VmcsControl32::EXCEPTION_BITMAP.write(0)?;
         VmcsControl64::IO_BITMAP_A_ADDR.write(self.io_bitmap.phys_addr().0.as_usize() as _)?;
         VmcsControl64::IO_BITMAP_B_ADDR.write(self.io_bitmap.phys_addr().1.as_usize() as _)?;
         VmcsControl64::MSR_BITMAPS_ADDR.write(self.msr_bitmap.phys_addr().as_usize() as _)?;
@@ -1202,8 +1203,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     ///
     /// This function is generally called before VM-entry.
     fn load_guest_xstate(&mut self) {
-        self.cur_xstate.save();
-        self.guest_xstate.restore();
+        // FIXME: Linux will throw a UD exception if we save/restore xstate.
+
+        // self.cur_xstate.save();
+        // self.guest_xstate.restore();
     }
 
     /// Save the current guest state to the vcpu,
@@ -1211,8 +1214,8 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     ///
     /// This function is generally called after VM-exit.
     fn load_host_xstate(&mut self) {
-        self.guest_xstate.save();
-        self.cur_xstate.restore();
+        // self.guest_xstate.save();
+        // self.cur_xstate.restore();
     }
 }
 
