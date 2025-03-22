@@ -5,8 +5,7 @@ use memory_addr::MemoryAddr;
 use page_table_entry::{GenericPTE, MappingFlags};
 use page_table_multiarch::{PageSize, PagingError, PagingHandler, PagingResult};
 
-use axaddrspace::{EPTTranslator, GuestPhysAddr, GuestVirtAddr, HostPhysAddr};
-use axerrno::{AxError, AxResult};
+use axaddrspace::{EPTTranslator, GuestPhysAddr, GuestVirtAddr};
 
 const fn p5_index(vaddr: usize) -> usize {
     (vaddr >> (12 + 36)) & (ENTRY_COUNT - 1)
@@ -143,12 +142,6 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
         );
 
         unsafe { core::slice::from_raw_parts(ptr, ENTRY_COUNT) }
-    }
-
-    fn table_of_mut<'a>(&mut self, gpa: GuestPhysAddr) -> &'a mut [PTE] {
-        let hpa = EPT::guest_phys_to_host_phys(gpa).unwrap();
-        let ptr = H::phys_to_virt(hpa).as_ptr() as _;
-        unsafe { core::slice::from_raw_parts_mut(ptr, ENTRY_COUNT) }
     }
 
     fn next_table<'a>(&self, entry: &PTE) -> PagingResult<&'a [PTE]> {

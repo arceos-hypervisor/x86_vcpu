@@ -101,9 +101,26 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
         self.vmcs_revision_id = vmx_basic.revision_id;
         self.vmx_region = VmxRegion::new(self.vmcs_revision_id, false)?;
 
+        use x86_64::registers::control::{Cr0Flags, Cr4Flags};
+        const HOST_CR0: Cr0Flags = Cr0Flags::from_bits_truncate(
+            Cr0Flags::PAGING.bits()
+                | Cr0Flags::WRITE_PROTECT.bits()
+                | Cr0Flags::NUMERIC_ERROR.bits()
+                | Cr0Flags::TASK_SWITCHED.bits()
+                | Cr0Flags::MONITOR_COPROCESSOR.bits()
+                | Cr0Flags::PROTECTED_MODE_ENABLE.bits(),
+        );
+        const HOST_CR4: Cr4Flags = Cr4Flags::from_bits_truncate(
+            Cr4Flags::PHYSICAL_ADDRESS_EXTENSION.bits()
+                | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits()
+                | Cr4Flags::OSXSAVE.bits(),
+        );
+
         unsafe {
             // Enable VMX using the VMXE bit.
-            Cr4::write(Cr4::read() | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS);
+            // Cr4::write(Cr4::read() | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS);
+            Cr0::write(HOST_CR0);
+            Cr4::write(HOST_CR4);
             // Execute VMXON.
             vmx::vmxon(self.vmx_region.phys_addr().as_usize() as _).map_err(|err| {
                 ax_err_type!(

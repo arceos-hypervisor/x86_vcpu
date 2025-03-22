@@ -6,7 +6,7 @@ use core::{arch::naked_asm, mem::size_of};
 use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::bits64::vmx;
-use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
+use x86::controlregs::Xcr0;
 use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
