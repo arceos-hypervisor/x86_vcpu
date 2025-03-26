@@ -19,10 +19,10 @@ page_table_entry = "0.5"
 memory_addr = "0.3.1"
 crate_interface = "0.1"
 
-axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git", branch = "inject_interrupt" }
+axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git", branch = "inject_interrupt" }
-
-x86_vlapic = { path = "../x86_vlapic" }
+x86_vlapic = { git = "https://github.com/arceos-hypervisor/x86_vlapic.git", branch = "timer" }
+axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git", branch = "inject_interrupt" }
 
 [features]
 default = ["vmx"]

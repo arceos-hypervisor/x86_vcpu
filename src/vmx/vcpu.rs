@@ -1,19 +1,13 @@
 use alloc::collections::VecDeque;
-use axdevice_base::{BaseDeviceOps, DeviceRWContext};
+use axdevice_base::BaseDeviceOps;
 use bit_field::BitField;
-use core::fmt::{Debug, Formatter, Result};
-use core::{arch::naked_asm, mem::size_of};
-use memory_addr::AddrRange;
+use core::{arch::naked_asm, fmt::{Debug, Formatter, Result}, mem::size_of};
 use raw_cpuid::CpuId;
-use x86::bits64::vmx;
-use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
-use x86::dtables::{self, DescriptorTablePointer};
-use x86::segmentation::SegmentSelector;
+use x86::{bits64::vmx, controlregs::{xcr0 as xcr0_read, xcr0_write, Xcr0}, dtables::{self, DescriptorTablePointer}, segmentation::SegmentSelector};
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 use x86_vlapic::EmulatedLocalApic;
 
-use axaddrspace::device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange};
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
+use axaddrspace::{device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange}, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
 
@@ -101,7 +95,7 @@ pub struct VmxVcpu<H: AxVCpuHal> {
     /// Pending events to be injected to the guest.
     pending_events: VecDeque<(u8, Option<u32>)>,
     /// Emulated Local APIC.
-    vlapic: EmulatedLocalApic<H::MmHal>,
+    vlapic: EmulatedLocalApic,
 
     // Extra states
     /// The XState of the VCpu. Both host and guest.
@@ -918,7 +912,6 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         self.advance_rip(VMEXIT_INSTR_LEN_RDMSR_WRMSR)?;
 
-        let context = DeviceRWContext::new(0); // TODO: use real context
         let msr = msr as _;
         if write {
             let value = self.read_edx_eax() as usize;
@@ -928,15 +921,14 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 msr, value
             );
 
-            <EmulatedLocalApic<H::MmHal> as BaseDeviceOps<SysRegAddrRange>>::handle_write(
+            <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_write(
                 &self.vlapic,
                 SysRegAddr::new(msr),
                 AccessWidth::Qword,
                 value,
-                context,
             )
         } else {
-            let value = <EmulatedLocalApic<H::MmHal> as BaseDeviceOps<SysRegAddrRange>>::handle_read(&self.vlapic, SysRegAddr::new(msr), AccessWidth::Qword, context)? as u64;
+            let value = <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_read(&self.vlapic, SysRegAddr::new(msr), AccessWidth::Qword)? as u64;
 
             info!("handle_vlapic_msr_read: msr={:#x}, value={:#x}", msr, value);
 
@@ -1350,7 +1342,7 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 
     fn inject_interrupt(&mut self, vector: usize) -> AxResult {
         if vector != 0 {
-            warn!("interrupt queued in inject_interrupt: vector {:#x}", vector);
+            // warn!("interrupt queued in inject_interrupt: vector {:#x}", vector);
         } else {
             warn!("interrupt queued in inject_interrupt: vector 0");
             panic!()

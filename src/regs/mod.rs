@@ -12,6 +12,7 @@ pub use diff::*;
 /// used in 64-bit x86 systems, allowing for easy manipulation and storage of register states.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+// #[cfg_attr(feature = "tracing", derive(Snapshot))]
 pub struct GeneralRegisters {
     /// The RAX register, typically used for return values in functions.
     pub rax: u64,
