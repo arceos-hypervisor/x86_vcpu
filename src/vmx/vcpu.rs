@@ -289,7 +289,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         // Handle vm-exits
         let exit_info = self.exit_info().unwrap();
-        debug!("VM exit: {:#x?}", exit_info);
+        trace!("VM exit: {:#x?}", exit_info);
 
         match self.builtin_vmexit_handler(&exit_info) {
             Some(result) => {
@@ -1206,12 +1206,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 res
             }
             LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION => {
-                warn!("handle_cpuid: LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION");
-
                 self.load_guest_xstate();
                 let res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 self.load_host_xstate();
-
                 res
             }
             LEAF_HYPERVISOR_INFO => CpuIdResult {
