@@ -96,10 +96,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             host_ctx: ctx,
         };
         debug!(
-            "[HV] created {} VmxVcpu(vmcs: {:#x}) xstate {:#x?}",
+            "[HV] created {} VmxVcpu(vmcs: {:#x})",
             if ctx.is_some() { "Host" } else { "Guest" },
             vcpu.vmcs.phys_addr(),
-            vcpu.guest_xstate
         );
         Ok(vcpu)
     }
@@ -531,15 +530,6 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     fn setup_vmcs_guest_from_ctx(&mut self) -> AxResult {
         let linux = self.host_ctx.expect("Host context is not set");
 
-        warn!("Linux context: {:#x?}", linux);
-
-        warn!(
-            "self xstate cur {:#x?} guest {:#x?}",
-            self.cur_xstate, self.guest_xstate
-        );
-
-        warn!("current xstate {:#x?}", XState::new());
-
         self.set_cr(0, linux.cr0.bits());
         self.set_cr(4, linux.cr4.bits());
         self.set_cr(3, linux.cr3);
@@ -570,10 +560,6 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsGuestNW::IDTR_BASE.write(linux.idt.base.as_u64() as _)?;
         VmcsGuest32::IDTR_LIMIT.write(linux.idt.limit as _)?;
 
-        debug!(
-            "this is the linux rip: {:#x} rsp:{:#x}",
-            linux.rip, linux.rsp
-        );
         VmcsGuestNW::RSP.write(linux.rsp as _)?;
         VmcsGuestNW::RIP.write(linux.rip as _)?;
         VmcsGuestNW::RFLAGS.write(0x2)?;
