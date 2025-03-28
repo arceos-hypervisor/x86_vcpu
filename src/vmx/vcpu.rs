@@ -17,7 +17,7 @@ use page_table_multiarch::{PageSize, PagingHandler, PagingResult};
 use axaddrspace::EPTTranslator;
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal, AxVcpuAccessGuestState};
 
 use super::VmxExitInfo;
 use super::as_axerr;
@@ -793,13 +793,13 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vaddr + seg_base
     }
 
-    fn guest_page_table_query(
+    pub fn guest_page_table_query(
         &self,
         gva: GuestVirtAddr,
     ) -> PagingResult<(GuestPhysAddr, MappingFlags, PageSize)> {
         let addr = self.gva_to_linear_addr(gva);
 
-        debug!("guest_page_table_query: gva {:?} linear {:?}", gva, addr);
+        // debug!("guest_page_table_query: gva {:?} linear {:?}", gva, addr);
 
         let guest_ptw_info = self.get_pagetable_walk_info();
         let guest_page_table: GuestPageTable64<X64PTE, H::PagingHandler, H::EPTTranslator> =
@@ -1365,5 +1365,65 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
         self.regs_mut().set_reg_of_index(reg as u8, val as u64);
+    }
+}
+
+impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
+    fn read_gpr(&self, reg: usize) -> usize {
+        self.regs().get_reg_of_index(reg as u8) as usize
+    }
+
+    fn write_gpr(&mut self, reg: usize, val: usize) {
+        self.regs_mut().set_reg_of_index(reg as u8, val as u64);
+    }
+
+    fn instr_pointer(&self) -> usize {
+        VmcsGuestNW::RIP.read().expect("Failed to read RIP") as usize
+    }
+
+    fn set_instr_pointer(&mut self, val: usize) {
+        VmcsGuestNW::RIP.write(val as _).expect("Failed to set RIP");
+    }
+
+    fn stack_pointer(&self) -> usize {
+        self.stack_pointer()
+    }
+
+    fn set_stack_pointer(&mut self, val: usize) {
+        self.set_stack_pointer(val);
+    }
+
+    fn frame_pointer(&self) -> usize {
+        self.regs().rbp as usize
+    }
+
+    fn set_frame_pointer(&mut self, val: usize) {
+        self.regs_mut().rbp = val as u64;
+    }
+
+    fn return_value(&self) -> usize {
+        self.regs().rax as usize
+    }
+
+    fn set_return_value(&mut self, val: usize) {
+        self.regs_mut().rax = val as u64;
+    }
+
+    fn guest_is_privileged(&self) -> bool {
+        use crate::segmentation::SegmentAccessRights;
+        SegmentAccessRights::from_bits_truncate(
+            VmcsGuest32::CS_ACCESS_RIGHTS
+                .read()
+                .expect("Failed to read CS_ACCESS_RIGHTS"),
+        )
+        .dpl()
+            == 0
+    }
+
+    fn guest_page_table_query(
+        &self,
+        gva: GuestVirtAddr,
+    ) -> Option<(GuestPhysAddr, MappingFlags, PageSize)> {
+        self.guest_page_table_query(gva).ok()
     }
 }
