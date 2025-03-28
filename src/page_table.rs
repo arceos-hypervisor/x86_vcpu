@@ -136,10 +136,10 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
         let hpa = EPT::guest_phys_to_host_phys(gpa).unwrap();
         let ptr = H::phys_to_virt(hpa).as_ptr() as _;
 
-        debug!(
-            "GuestPageTable64::table_of gpa: {:?} hpa: {:?} ptr: {:p}",
-            gpa, hpa, ptr
-        );
+        // debug!(
+        //     "GuestPageTable64::table_of gpa: {:?} hpa: {:?} ptr: {:p}",
+        //     gpa, hpa, ptr
+        // );
 
         unsafe { core::slice::from_raw_parts(ptr, ENTRY_COUNT) }
     }
