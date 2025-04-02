@@ -256,6 +256,8 @@ bitflags! {
         const WALK_LENGTH_3 = 2 << 3;
         /// EPT page-walk length 4.
         const WALK_LENGTH_4 = 3 << 3;
+        /// EPT page-walk length 5
+        const WALK_LENGTH_5 = 4 << 3;
         /// Setting this control to 1 enables accessed and dirty flags for EPT.
         const ENABLE_ACCESSED_DIRTY = 1 << 6;
     }
@@ -266,5 +268,55 @@ impl EPTPointer {
         let aligned_addr = pml4_paddr.as_usize() & !(PAGE_SIZE - 1);
         let flags = Self::from_bits_retain(aligned_addr as u64);
         flags | Self::MEM_TYPE_WB | Self::WALK_LENGTH_4 | Self::ENABLE_ACCESSED_DIRTY
+    }
+}
+
+pub const EPTP_LIST_SIZE: usize = 512;
+
+/// EPTP list, the 4-KByte structure,
+/// The EPTP list comprises 512 8-Byte entries (each an EPTP value)
+/// and is used by the EPTP-switching VM function (see Section 26.5.6.3).
+pub(super) struct EptpList<H: AxVCpuHal> {
+    frame: PhysFrame<H>,
+}
+
+impl<H: AxVCpuHal> EptpList<H> {
+    pub fn new() -> AxResult<Self> {
+        Ok(Self {
+            frame: PhysFrame::alloc_zero()?,
+        })
+    }
+
+    pub fn phys_addr(&self) -> HostPhysAddr {
+        self.frame.start_paddr()
+    }
+
+    pub fn set_entry(&mut self, idx: usize, eptp: EPTPointer) {
+        assert!(idx < EPTP_LIST_SIZE);
+        // Todo: validate eptp refer to 26.5.6.3 EPTP Switching.
+        let ptr = self.frame.as_mut_ptr() as *mut u64;
+        unsafe {
+            ptr.add(idx).write(eptp.bits());
+        }
+    }
+
+    pub fn entry_is_set(&self, idx: usize) -> bool {
+        assert!(idx < EPTP_LIST_SIZE);
+        let ptr = self.frame.as_mut_ptr() as *const u64;
+        unsafe { ptr.add(idx).read() != 0 }
+    }
+
+    pub fn get_entry(&self, idx: usize) -> EPTPointer {
+        assert!(idx < EPTP_LIST_SIZE);
+        let ptr = self.frame.as_mut_ptr() as *const u64;
+        unsafe { EPTPointer::from_bits_truncate(ptr.add(idx).read()) }
+    }
+
+    pub fn remove_entry(&mut self, idx: usize) {
+        assert!(idx < EPTP_LIST_SIZE);
+        let ptr = self.frame.as_mut_ptr() as *mut u64;
+        unsafe {
+            ptr.add(idx).write(0);
+        }
     }
 }
