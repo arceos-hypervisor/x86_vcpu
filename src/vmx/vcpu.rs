@@ -2,6 +2,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
+use x86_64::VirtAddr;
 
 use bit_field::BitField;
 use raw_cpuid::CpuId;
@@ -23,7 +24,7 @@ use super::VmxExitInfo;
 use super::as_axerr;
 use super::definitions::VmxExitReason;
 use super::read_vmcs_revision_id;
-use super::structs::{IOBitmap, MsrBitmap, VmxRegion};
+use super::structs::{EPTP_LIST_SIZE, EPTPointer, EptpList, IOBitmap, MsrBitmap, VmxRegion};
 use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, interrupt_exit_info,
@@ -163,6 +164,8 @@ pub struct VmxVcpu<H: AxVCpuHal> {
     vmcs: VmxRegion<H>,
     io_bitmap: IOBitmap<H>,
     msr_bitmap: MsrBitmap<H>,
+    eptp_list: EptpList<H>,
+
     pending_events: VecDeque<(u8, Option<u32>)>,
     // xstate: XState,
     /// XState used by the guest OS, loaded before running the guest.
@@ -188,6 +191,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             vmcs: VmxRegion::new(read_vmcs_revision_id(), false)?,
             io_bitmap: IOBitmap::passthrough_all()?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
+            eptp_list: EptpList::new()?,
             pending_events: VecDeque::with_capacity(8),
             guest_xstate: if let Some(ctx) = ctx {
                 ctx.xstate
@@ -205,12 +209,6 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             vcpu.vmcs.phys_addr(),
         );
         Ok(vcpu)
-    }
-
-    /// Set the new [`VmxVcpu`] context from guest OS.
-    pub fn setup(&mut self, ept_root: HostPhysAddr, entry: GuestPhysAddr) -> AxResult {
-        self.setup_vmcs(entry, ept_root)?;
-        Ok(())
     }
 
     // /// Get the identifier of this [`VmxVcpu`].
@@ -856,6 +854,13 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         // Bit 0: EPTP switching
         VmcsControl64::VM_FUNCTION_CONTROLS.write(0b1)?;
 
+        assert!(
+            self.eptp_list.entry_is_set(0),
+            "The First EPTP list entry must be set as initial EPTP."
+        );
+
+        VmcsControl64::EPTP_LIST_ADDR.write(self.eptp_list.phys_addr().as_usize() as _)?;
+
         // Pass-through exceptions (except #UD(6)), don't use I/O bitmap, set MSR bitmaps.
         let exception_bitmap: u32 = 1 << 6;
 
@@ -866,6 +871,37 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsControl64::IO_BITMAP_B_ADDR.write(self.io_bitmap.phys_addr().1.as_usize() as _)?;
         VmcsControl64::MSR_BITMAPS_ADDR.write(self.msr_bitmap.phys_addr().as_usize() as _)?;
         Ok(())
+    }
+
+    fn load_vmcs_guest(&self, linux: &mut LinuxContext) {
+        linux.rip = VmcsGuestNW::RIP.read().unwrap() as _;
+        linux.rsp = VmcsGuestNW::RSP.read().unwrap() as _;
+        linux.cr0 = Cr0Flags::from_bits_truncate(VmcsGuestNW::CR0.read().unwrap() as _);
+        linux.cr3 = VmcsGuestNW::CR3.read().unwrap() as _;
+        linux.cr4 = Cr4Flags::from_bits_truncate(VmcsGuestNW::CR4.read().unwrap() as _);
+
+        linux.es.selector = SegmentSelector::from_raw(VmcsGuest16::ES_SELECTOR.read().unwrap());
+        linux.cs.selector = SegmentSelector::from_raw(VmcsGuest16::CS_SELECTOR.read().unwrap());
+        linux.ss.selector = SegmentSelector::from_raw(VmcsGuest16::SS_SELECTOR.read().unwrap());
+        linux.ds.selector = SegmentSelector::from_raw(VmcsGuest16::DS_SELECTOR.read().unwrap());
+        linux.fs.selector = SegmentSelector::from_raw(VmcsGuest16::FS_SELECTOR.read().unwrap());
+        linux.fs.base = VmcsGuestNW::FS_BASE.read().unwrap() as _;
+        linux.gs.selector = SegmentSelector::from_raw(VmcsGuest16::GS_SELECTOR.read().unwrap());
+        linux.gs.base = VmcsGuestNW::GS_BASE.read().unwrap() as _;
+        linux.tss.selector = SegmentSelector::from_raw(VmcsGuest16::TR_SELECTOR.read().unwrap());
+
+        linux.gdt.base = VirtAddr::new(VmcsGuestNW::GDTR_BASE.read().unwrap() as _);
+        linux.gdt.limit = VmcsGuest32::GDTR_LIMIT.read().unwrap() as _;
+        linux.idt.base = VirtAddr::new(VmcsGuestNW::IDTR_BASE.read().unwrap() as _);
+        linux.idt.limit = VmcsGuest32::IDTR_LIMIT.read().unwrap() as _;
+
+        linux.load_guest_regs(self.regs());
+
+        // unsafe {
+        //     Msr::IA32_SYSENTER_CS.write(VmcsGuest32::IA32_SYSENTER_CS.read().unwrap() as _);
+        //     Msr::IA32_SYSENTER_ESP.write(VmcsGuestNW::IA32_SYSENTER_ESP.read().unwrap() as _);
+        //     Msr::IA32_SYSENTER_EIP.write(VmcsGuestNW::IA32_SYSENTER_EIP.read().unwrap() as _);
+        // }
     }
 
     fn get_paging_level(&self) -> usize {
@@ -1364,6 +1400,12 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
         Self::new(Some(config))
     }
 
+    fn load_host(&self) -> AxResult<Self::HostConfig> {
+        let mut linux = LinuxContext::default();
+        self.load_vmcs_guest(&mut linux);
+        Ok(linux)
+    }
+
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
         self.entry = Some(entry);
         Ok(())
@@ -1371,6 +1413,7 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 
     fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
         self.ept_root = Some(ept_root);
+        self.append_eptp_list(0, ept_root)?;
         Ok(())
     }
 
@@ -1525,5 +1568,46 @@ impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
         gva: GuestVirtAddr,
     ) -> Option<(GuestPhysAddr, MappingFlags, PageSize)> {
         self.guest_page_table_query(gva).ok()
+    }
+
+    fn append_eptp_list(&mut self, idx: usize, eptp: HostPhysAddr) -> AxResult {
+        if idx >= EPTP_LIST_SIZE {
+            return ax_err!(InvalidInput);
+        }
+
+        if self.eptp_list.entry_is_set(idx) {
+            return ax_err!(InvalidInput);
+        }
+
+        self.eptp_list
+            .set_entry(idx, EPTPointer::from_table_phys(eptp));
+        Ok(())
+    }
+
+    fn remove_eptp_list_entry(&mut self, idx: usize) -> AxResult {
+        if idx >= EPTP_LIST_SIZE {
+            return ax_err!(InvalidInput);
+        }
+        if !self.eptp_list.entry_is_set(idx) {
+            return ax_err!(InvalidInput);
+        }
+
+        self.eptp_list.remove_entry(idx);
+
+        Ok(())
+    }
+
+    fn get_eptp_list_entry(&self, idx: usize) -> AxResult<HostPhysAddr> {
+        if idx >= EPTP_LIST_SIZE {
+            return ax_err!(InvalidInput);
+        }
+        if !self.eptp_list.entry_is_set(idx) {
+            return ax_err!(InvalidInput);
+        }
+        let entry = self.eptp_list.get_entry(idx);
+
+        Ok(HostPhysAddr::from_usize(memory_addr::align_down_4k(
+            entry.bits() as _,
+        )))
     }
 }

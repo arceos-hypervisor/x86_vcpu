@@ -208,6 +208,15 @@ impl LinuxContext {
         }
     }
 
+    pub fn load_guest_regs(&mut self, regs: &GeneralRegisters) {
+        self.r15 = regs.r15;
+        self.r14 = regs.r14;
+        self.r13 = regs.r13;
+        self.r12 = regs.r12;
+        self.rbx = regs.rbx;
+        self.rbp = regs.rbp;
+    }
+
     /// Restore linux general-purpose registers and stack, then return back to linux.
     pub fn return_to_linux(&self, guest_regs: &GeneralRegisters) -> ! {
         unsafe {
