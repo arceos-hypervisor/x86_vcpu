@@ -1411,6 +1411,16 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 }
 
 impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
+    type GeneralRegisters = GeneralRegisters;
+
+    fn regs(&self) -> &Self::GeneralRegisters {
+        self.regs()
+    }
+
+    fn regs_mut(&mut self) -> &mut Self::GeneralRegisters {
+        self.regs_mut()
+    }
+
     fn read_gpr(&self, reg: usize) -> usize {
         self.regs().get_reg_of_index(reg as u8) as usize
     }
