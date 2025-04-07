@@ -92,10 +92,6 @@ pub struct GuestPageTable64<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslato
 impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE, H, EPT> {
     /// Create a new page table.
     pub fn construct(guest_ptw_info: &GuestPageWalkInfo) -> Self {
-        debug!(
-            "GuestPageTable64::construct CR3: {:?} level {}",
-            guest_ptw_info.cr3, guest_ptw_info.level
-        );
         const PHYS_ADDR_MASK: usize = 0x000f_ffff_ffff_f000; // bits 12..52
 
         Self {
