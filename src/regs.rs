@@ -167,6 +167,7 @@ impl GeneralRegisters {
 macro_rules! save_regs_to_stack {
     () => {
         "
+        .code64
         push r15
         push r14
         push r13
