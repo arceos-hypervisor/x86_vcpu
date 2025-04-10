@@ -43,6 +43,11 @@ pub struct LinuxContext {
     pub lstar: u64,
     pub cstar: u64,
     pub fmask: u64,
+
+    pub ia32_sysenter_cs: u64,
+    pub ia32_sysenter_esp: u64,
+    pub ia32_sysenter_eip: u64,
+
     pub kernel_gsbase: u64,
     pub pat: u64,
     pub mtrr_def_type: u64,
@@ -87,6 +92,9 @@ impl Default for LinuxContext {
             lstar: 0,
             cstar: 0,
             fmask: 0,
+            ia32_sysenter_cs: 0,
+            ia32_sysenter_esp: 0,
+            ia32_sysenter_eip: 0,
             kernel_gsbase: 0,
             pat: 0,
             mtrr_def_type: 0,
@@ -143,6 +151,9 @@ impl LinuxContext {
             lstar: Msr::IA32_LSTAR.read(),
             cstar: Msr::IA32_CSTAR.read(),
             fmask: Msr::IA32_FMASK.read(),
+            ia32_sysenter_cs: Msr::IA32_SYSENTER_CS.read(),
+            ia32_sysenter_esp: Msr::IA32_SYSENTER_ESP.read(),
+            ia32_sysenter_eip: Msr::IA32_SYSENTER_EIP.read(),
             kernel_gsbase: Msr::IA32_KERNEL_GSBASE.read(),
             pat: Msr::IA32_PAT.read(),
             mtrr_def_type: Msr::IA32_MTRR_DEF_TYPE.read(),
@@ -153,6 +164,10 @@ impl LinuxContext {
     /// Restore system registers.
     pub fn restore(&self) {
         unsafe {
+            Msr::IA32_SYSENTER_CS.write(self.ia32_sysenter_cs);
+            Msr::IA32_SYSENTER_ESP.write(self.ia32_sysenter_esp);
+            Msr::IA32_SYSENTER_EIP.write(self.ia32_sysenter_eip);
+
             Msr::IA32_EFER.write(self.efer);
             Msr::IA32_STAR.write(self.star);
             Msr::IA32_LSTAR.write(self.lstar);

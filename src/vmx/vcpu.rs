@@ -562,9 +562,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsGuestNW::RIP.write(linux.rip as _)?;
         VmcsGuestNW::RFLAGS.write(0x2)?;
 
-        VmcsGuest32::IA32_SYSENTER_CS.write(Msr::IA32_SYSENTER_CS.read() as _)?;
-        VmcsGuestNW::IA32_SYSENTER_ESP.write(Msr::IA32_SYSENTER_ESP.read() as _)?;
-        VmcsGuestNW::IA32_SYSENTER_EIP.write(Msr::IA32_SYSENTER_EIP.read() as _)?;
+        VmcsGuest32::IA32_SYSENTER_CS.write(linux.ia32_sysenter_cs as _)?;
+        VmcsGuestNW::IA32_SYSENTER_ESP.write(linux.ia32_sysenter_esp as _)?;
+        VmcsGuestNW::IA32_SYSENTER_EIP.write(linux.ia32_sysenter_eip as _)?;
 
         VmcsGuestNW::DR7.write(0x400)?;
         VmcsGuest64::IA32_DEBUGCTL.write(0)?;
@@ -787,13 +787,11 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         linux.idt.base = VirtAddr::new(VmcsGuestNW::IDTR_BASE.read().unwrap() as _);
         linux.idt.limit = VmcsGuest32::IDTR_LIMIT.read().unwrap() as _;
 
-        linux.load_guest_regs(self.regs());
+        linux.ia32_sysenter_cs = VmcsGuest32::IA32_SYSENTER_CS.read().unwrap() as _; // 0x174
+        linux.ia32_sysenter_esp = VmcsGuestNW::IA32_SYSENTER_ESP.read().unwrap() as _; // 0x178
+        linux.ia32_sysenter_eip = VmcsGuestNW::IA32_SYSENTER_EIP.read().unwrap() as _; // 0x17a
 
-        // unsafe {
-        //     Msr::IA32_SYSENTER_CS.write(VmcsGuest32::IA32_SYSENTER_CS.read().unwrap() as _);
-        //     Msr::IA32_SYSENTER_ESP.write(VmcsGuestNW::IA32_SYSENTER_ESP.read().unwrap() as _);
-        //     Msr::IA32_SYSENTER_EIP.write(VmcsGuestNW::IA32_SYSENTER_EIP.read().unwrap() as _);
-        // }
+        linux.load_guest_regs(self.regs());
     }
 
     fn get_paging_level(&self) -> usize {
@@ -1296,10 +1294,9 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
         Self::new(Some(config))
     }
 
-    fn load_host(&self) -> AxResult<Self::HostConfig> {
-        let mut linux = LinuxContext::default();
-        self.load_vmcs_guest(&mut linux);
-        Ok(linux)
+    fn load_host(&self, config: &mut Self::HostConfig) -> AxResult {
+        self.load_vmcs_guest(config);
+        Ok(())
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
