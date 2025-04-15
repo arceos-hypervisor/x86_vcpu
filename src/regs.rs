@@ -53,6 +53,15 @@ impl GeneralRegisters {
         }
     }
 
+    pub fn load_from_context(&mut self, context: &crate::context::LinuxContext) {
+        self.rbx = context.rbx;
+        self.rbp = context.rbp;
+        self.r12 = context.r12;
+        self.r13 = context.r13;
+        self.r14 = context.r14;
+        self.r15 = context.r15;
+    }
+
     /// Returns the value of the general-purpose register corresponding to the given index.
     ///
     /// The mapping of indices to registers is as follows:
