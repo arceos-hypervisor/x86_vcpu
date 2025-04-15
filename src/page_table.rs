@@ -128,8 +128,11 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
 
 // private implements
 impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE, H, EPT> {
-    fn table_of<'a>(&self, gpa: GuestPhysAddr) -> &'a [PTE] {
-        let hpa = EPT::guest_phys_to_host_phys(gpa).unwrap();
+    fn table_of<'a>(&self, gpa: GuestPhysAddr) -> PagingResult<&'a [PTE]> {
+        let hpa = EPT::guest_phys_to_host_phys(gpa).ok_or_else(|| {
+            warn!("Failed to translate GPA {:?}", gpa);
+            PagingError::NotMapped
+        })?;
         let ptr = H::phys_to_virt(hpa).as_ptr() as _;
 
         // debug!(
@@ -137,7 +140,7 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
         //     gpa, hpa, ptr
         // );
 
-        unsafe { core::slice::from_raw_parts(ptr, ENTRY_COUNT) }
+        Ok(unsafe { core::slice::from_raw_parts(ptr, ENTRY_COUNT) })
     }
 
     fn next_table<'a>(&self, entry: &PTE) -> PagingResult<&'a [PTE]> {
@@ -146,7 +149,7 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
         } else if entry.is_huge() {
             Err(PagingError::MappedToHugePage)
         } else {
-            Ok(self.table_of(entry.paddr().into()))
+            self.table_of(entry.paddr().into())
         }
     }
 
@@ -154,14 +157,14 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
         let vaddr: usize = gva.into();
 
         let p3 = if self.levels == 3 {
-            self.table_of(self.root_paddr())
+            self.table_of(self.root_paddr())?
         } else if self.levels == 4 {
-            let p4 = self.table_of(self.root_paddr());
+            let p4 = self.table_of(self.root_paddr())?;
             let p4e = &p4[p4_index(vaddr)];
             self.next_table(p4e)?
         } else {
             // 5-level paging
-            let p5 = self.table_of(self.root_paddr());
+            let p5 = self.table_of(self.root_paddr())?;
             let p5e = &p5[p5_index(vaddr)];
             if p5e.is_huge() {
                 return Err(PagingError::MappedToHugePage);

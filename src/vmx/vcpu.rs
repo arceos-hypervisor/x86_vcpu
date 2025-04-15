@@ -174,18 +174,13 @@ pub struct VmxVcpu<H: AxVCpuHal> {
     cur_xstate: XState,
     entry: Option<GuestPhysAddr>,
     ept_root: Option<HostPhysAddr>,
-    host_ctx: Option<LinuxContext>,
 }
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
     /// Create a new [`VmxVcpu`].
-    pub fn new(ctx: Option<LinuxContext>) -> AxResult<Self> {
+    pub fn new() -> AxResult<Self> {
         let vcpu = Self {
-            guest_regs: if let Some(ctx) = ctx {
-                GeneralRegisters::from_context(&ctx)
-            } else {
-                GeneralRegisters::default()
-            },
+            guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
             launched: false,
             vmcs: VmxRegion::new(read_vmcs_revision_id(), false)?,
@@ -193,21 +188,12 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             msr_bitmap: MsrBitmap::passthrough_all()?,
             eptp_list: EptpList::new()?,
             pending_events: VecDeque::with_capacity(8),
-            guest_xstate: if let Some(ctx) = ctx {
-                ctx.xstate
-            } else {
-                XState::new()
-            },
+            guest_xstate: XState::new(),
             cur_xstate: XState::new(),
             entry: None,
             ept_root: None,
-            host_ctx: ctx,
         };
-        debug!(
-            "[HV] created {} VmxVcpu(vmcs: {:#x})",
-            if ctx.is_some() { "Host" } else { "Guest" },
-            vcpu.vmcs.phys_addr(),
-        );
+        debug!("[HV] created VmxVcpu(vmcs: {:#x})", vcpu.vmcs.phys_addr(),);
         Ok(vcpu)
     }
 
@@ -452,7 +438,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         while remained_size > 0 {
             let (gpa, _flags, page_size) = self.guest_page_table_query(gva).map_err(|e| {
-                warn!("Failed to query guest page table: {:?}", e);
+                warn!(
+                    "Failed to query guest page table, GVA {:?} err {:?}",
+                    gva, e
+                );
                 ax_err_type!(BadAddress)
             })?;
             let pgoff = page_size.align_offset(addr.into());
@@ -572,18 +561,28 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         Ok(())
     }
 
-    fn setup_vmcs(&mut self, entry: GuestPhysAddr, ept_root: HostPhysAddr) -> AxResult {
-        // If self.host_ctx.is_none(), it means this is a vcpu for guest VM.
-        let is_guest = self.host_ctx.is_none();
+    fn setup_vmcs(
+        &mut self,
+        ept_root: HostPhysAddr,
+        entry: Option<GuestPhysAddr>,
+        ctx: Option<LinuxContext>,
+    ) -> AxResult {
+        let mut is_guest = true;
+
         let paddr = self.vmcs.phys_addr().as_usize() as u64;
         unsafe {
             vmx::vmclear(paddr).map_err(as_axerr)?;
         }
         self.bind_to_current_processor()?;
-        if is_guest {
-            self.setup_vmcs_guest(entry)?;
+
+        if let Some(ctx) = ctx {
+            is_guest = false;
+            self.setup_vmcs_guest_from_ctx(ctx)?;
         } else {
-            self.setup_vmcs_guest_from_ctx()?;
+            self.setup_vmcs_guest(entry.ok_or_else(|| {
+                error!("VmxVcpu::setup_vmcs: entry is None");
+                ax_err_type!(InvalidInput)
+            })?)?;
         }
 
         self.setup_vmcs_control(ept_root, is_guest)?;
@@ -631,8 +630,8 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     /// Indeed, this function can be combined with `setup_vmcs_guest`,
     /// to avoid complexity and minimize the modification,
     /// we just keep them separated.
-    fn setup_vmcs_guest_from_ctx(&mut self) -> AxResult {
-        let linux = self.host_ctx.expect("Host context is not set");
+    fn setup_vmcs_guest_from_ctx(&mut self, host_ctx: LinuxContext) -> AxResult {
+        let linux = host_ctx;
 
         self.set_cr(0, linux.cr0.bits());
         self.set_cr(4, linux.cr4.bits());
@@ -1388,17 +1387,13 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 
     type SetupConfig = ();
 
-    type HostConfig = crate::context::LinuxContext;
+    type HostContext = crate::context::LinuxContext;
 
     fn new(_config: Self::CreateConfig) -> AxResult<Self> {
-        Self::new(None)
+        Self::new()
     }
 
-    fn new_host(config: Self::HostConfig) -> AxResult<Self> {
-        Self::new(Some(config))
-    }
-
-    fn load_host(&self, config: &mut Self::HostConfig) -> AxResult {
+    fn load_context(&self, config: &mut Self::HostContext) -> AxResult {
         self.load_vmcs_guest(config);
         Ok(())
     }
@@ -1415,7 +1410,12 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     }
 
     fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
-        self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap())
+        self.setup_vmcs(self.ept_root.unwrap(), self.entry, None)
+    }
+
+    fn setup_from_context(&mut self, ctx: Self::HostContext) -> AxResult {
+        self.guest_regs.load_from_context(&ctx);
+        self.setup_vmcs(self.ept_root.unwrap(), None, Some(ctx))
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
@@ -1481,6 +1481,23 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                                     data: self.regs().rax.get_bits(width.bits_range()),
                                 }
                             }
+                        }
+                    }
+                    VmxExitReason::EPT_VIOLATION => {
+                        let ept_info = self.nested_page_fault_info()?;
+
+                        warn!("VMX EPT-Exit: {:#x?} of {:#x?}", ept_info, exit_info);
+
+                        warn!("Vcpu {:#x?}", self);
+
+                        self.decode_instruction(
+                            GuestVirtAddr::from_usize(exit_info.guest_rip),
+                            exit_info.exit_instruction_length as _,
+                        )?;
+
+                        AxVCpuExitReason::NestedPageFault {
+                            addr: ept_info.fault_guest_paddr,
+                            access_flags: ept_info.access_flags,
                         }
                     }
                     _ => {
