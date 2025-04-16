@@ -348,7 +348,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             if let Some(hpa) = H::EPTTranslator::guest_phys_to_host_phys(gpa) {
                 let hva_ptr = H::PagingHandler::phys_to_virt(hpa).as_ptr();
                 for i in 0..read_size {
-                    content.push(unsafe { hva_ptr.add(pgoff + i).read() });
+                    content.push(unsafe { hva_ptr.add(i).read() });
                 }
             } else {
                 return ax_err!(BadAddress);
@@ -1382,7 +1382,7 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                             }
                         }
                     }
-                    VmxExitReason::EPT_VIOLATION => {
+                    VmxExitReason::EPT_VIOLATION | VmxExitReason::TRIPLE_FAULT => {
                         let ept_info = self.nested_page_fault_info()?;
 
                         warn!("VMX EPT-Exit: {:#x?} of {:#x?}", ept_info, exit_info);
