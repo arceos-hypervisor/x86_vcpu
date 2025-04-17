@@ -32,7 +32,7 @@ use super::vmcs::{
 use crate::LinuxContext;
 use crate::page_table::GuestPageTable64;
 use crate::page_table::GuestPageWalkInfo;
-use crate::segmentation::Segment;
+use crate::segmentation::{Segment, SegmentAccessRights};
 use crate::xstate::XState;
 use crate::{msr::Msr, regs::GeneralRegisters};
 
@@ -174,11 +174,13 @@ pub struct VmxVcpu<H: AxVCpuHal> {
     cur_xstate: XState,
     entry: Option<GuestPhysAddr>,
     ept_root: Option<HostPhysAddr>,
+
+    id: usize,
 }
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
     /// Create a new [`VmxVcpu`].
-    pub fn new() -> AxResult<Self> {
+    pub fn new(id: usize) -> AxResult<Self> {
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
@@ -192,6 +194,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             cur_xstate: XState::new(),
             entry: None,
             ept_root: None,
+            id,
         };
         debug!("[HV] created VmxVcpu(vmcs: {:#x})", vcpu.vmcs.phys_addr(),);
         Ok(vcpu)
@@ -649,6 +652,11 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             }};
         }
 
+        debug!(
+            "setup_vmcs_guest_from_ctx: CS access rights: {:?}",
+            linux.cs.access_rights
+        );
+
         set_guest_segment!(linux.es, ES);
         set_guest_segment!(linux.cs, CS);
         set_guest_segment!(linux.ss, SS);
@@ -872,33 +880,42 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         Ok(())
     }
 
-    fn load_vmcs_guest(&self, linux: &mut LinuxContext) {
-        linux.rip = VmcsGuestNW::RIP.read().unwrap() as _;
-        linux.rsp = VmcsGuestNW::RSP.read().unwrap() as _;
-        linux.cr0 = Cr0Flags::from_bits_truncate(VmcsGuestNW::CR0.read().unwrap() as _);
-        linux.cr3 = VmcsGuestNW::CR3.read().unwrap() as _;
-        linux.cr4 = Cr4Flags::from_bits_truncate(VmcsGuestNW::CR4.read().unwrap() as _);
+    fn load_vmcs_guest(&self, linux: &mut LinuxContext) -> AxResult {
+        linux.rip = VmcsGuestNW::RIP.read()? as _;
+        linux.rsp = VmcsGuestNW::RSP.read()? as _;
+        linux.cr0 = Cr0Flags::from_bits_truncate(VmcsGuestNW::CR0.read()? as _);
+        linux.cr3 = VmcsGuestNW::CR3.read()? as _;
+        linux.cr4 = Cr4Flags::from_bits_truncate(VmcsGuestNW::CR4.read()? as _);
 
-        linux.es.selector = SegmentSelector::from_raw(VmcsGuest16::ES_SELECTOR.read().unwrap());
-        linux.cs.selector = SegmentSelector::from_raw(VmcsGuest16::CS_SELECTOR.read().unwrap());
-        linux.ss.selector = SegmentSelector::from_raw(VmcsGuest16::SS_SELECTOR.read().unwrap());
-        linux.ds.selector = SegmentSelector::from_raw(VmcsGuest16::DS_SELECTOR.read().unwrap());
-        linux.fs.selector = SegmentSelector::from_raw(VmcsGuest16::FS_SELECTOR.read().unwrap());
-        linux.fs.base = VmcsGuestNW::FS_BASE.read().unwrap() as _;
-        linux.gs.selector = SegmentSelector::from_raw(VmcsGuest16::GS_SELECTOR.read().unwrap());
-        linux.gs.base = VmcsGuestNW::GS_BASE.read().unwrap() as _;
-        linux.tss.selector = SegmentSelector::from_raw(VmcsGuest16::TR_SELECTOR.read().unwrap());
+        linux.es.selector = SegmentSelector::from_raw(VmcsGuest16::ES_SELECTOR.read()?);
 
-        linux.gdt.base = VirtAddr::new(VmcsGuestNW::GDTR_BASE.read().unwrap() as _);
-        linux.gdt.limit = VmcsGuest32::GDTR_LIMIT.read().unwrap() as _;
-        linux.idt.base = VirtAddr::new(VmcsGuestNW::IDTR_BASE.read().unwrap() as _);
-        linux.idt.limit = VmcsGuest32::IDTR_LIMIT.read().unwrap() as _;
+        linux.cs.selector = SegmentSelector::from_raw(VmcsGuest16::CS_SELECTOR.read()?);
+        // CS:
+        // If the Type is 9 or 11 (non-conforming code segment), the DPL must equal the DPL in the access-rights field for SS.
+        linux.cs.access_rights =
+            SegmentAccessRights::from_bits_truncate(VmcsGuest32::CS_ACCESS_RIGHTS.read()?);
+        linux.ss.selector = SegmentSelector::from_raw(VmcsGuest16::SS_SELECTOR.read()?);
+        linux.ss.access_rights =
+            SegmentAccessRights::from_bits_truncate(VmcsGuest32::SS_ACCESS_RIGHTS.read()?);
 
-        linux.ia32_sysenter_cs = VmcsGuest32::IA32_SYSENTER_CS.read().unwrap() as _; // 0x174
-        linux.ia32_sysenter_esp = VmcsGuestNW::IA32_SYSENTER_ESP.read().unwrap() as _; // 0x178
-        linux.ia32_sysenter_eip = VmcsGuestNW::IA32_SYSENTER_EIP.read().unwrap() as _; // 0x17a
+        linux.ds.selector = SegmentSelector::from_raw(VmcsGuest16::DS_SELECTOR.read()?);
+        linux.fs.selector = SegmentSelector::from_raw(VmcsGuest16::FS_SELECTOR.read()?);
+        linux.fs.base = VmcsGuestNW::FS_BASE.read()? as _;
+        linux.gs.selector = SegmentSelector::from_raw(VmcsGuest16::GS_SELECTOR.read()?);
+        linux.gs.base = VmcsGuestNW::GS_BASE.read()? as _;
+        linux.tss.selector = SegmentSelector::from_raw(VmcsGuest16::TR_SELECTOR.read()?);
+
+        linux.gdt.base = VirtAddr::new(VmcsGuestNW::GDTR_BASE.read()? as _);
+        linux.gdt.limit = VmcsGuest32::GDTR_LIMIT.read()? as _;
+        linux.idt.base = VirtAddr::new(VmcsGuestNW::IDTR_BASE.read()? as _);
+        linux.idt.limit = VmcsGuest32::IDTR_LIMIT.read()? as _;
+
+        linux.ia32_sysenter_cs = VmcsGuest32::IA32_SYSENTER_CS.read()? as _; // 0x174
+        linux.ia32_sysenter_esp = VmcsGuestNW::IA32_SYSENTER_ESP.read()? as _; // 0x178
+        linux.ia32_sysenter_eip = VmcsGuestNW::IA32_SYSENTER_EIP.read()? as _; // 0x17a
 
         linux.load_guest_regs(self.regs());
+        Ok(())
     }
 
     fn get_paging_level(&self) -> usize {
@@ -1364,6 +1381,33 @@ fn get_tr_base(tr: SegmentSelector, gdt: &DescriptorTablePointer<u64>) -> u64 {
 impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
     fn fmt(&self, f: &mut Formatter) -> Result {
         (|| -> AxResult<Result> {
+            let cs_selector = SegmentSelector::from_raw(VmcsGuest16::CS_SELECTOR.read()?);
+            let cs_access_rights_raw = VmcsGuest32::CS_ACCESS_RIGHTS.read()?;
+            let cs_access_rights = SegmentAccessRights::from_bits_truncate(cs_access_rights_raw);
+            let ss_selector = SegmentSelector::from_raw(VmcsGuest16::SS_SELECTOR.read()?);
+            let ss_access_rights_raw = VmcsGuest32::SS_ACCESS_RIGHTS.read()?;
+            let ss_access_rights = SegmentAccessRights::from_bits_truncate(ss_access_rights_raw);
+            let ds_selector = SegmentSelector::from_raw(VmcsGuest16::DS_SELECTOR.read()?);
+            let ds_access_rights =
+                SegmentAccessRights::from_bits_truncate(VmcsGuest32::DS_ACCESS_RIGHTS.read()?);
+            let fs_selector = SegmentSelector::from_raw(VmcsGuest16::FS_SELECTOR.read()?);
+            let fs_access_rights =
+                SegmentAccessRights::from_bits_truncate(VmcsGuest32::FS_ACCESS_RIGHTS.read()?);
+            let gs_selector = SegmentSelector::from_raw(VmcsGuest16::GS_SELECTOR.read()?);
+            let gs_access_rights =
+                SegmentAccessRights::from_bits_truncate(VmcsGuest32::GS_ACCESS_RIGHTS.read()?);
+            let tr_selector = SegmentSelector::from_raw(VmcsGuest16::TR_SELECTOR.read()?);
+            let tr_access_rights =
+                SegmentAccessRights::from_bits_truncate(VmcsGuest32::TR_ACCESS_RIGHTS.read()?);
+            let gdt_base = VirtAddr::new(VmcsGuestNW::GDTR_BASE.read()? as _);
+            let gdt_limit = VmcsGuest32::GDTR_LIMIT.read()?;
+            let idt_base = VirtAddr::new(VmcsGuestNW::IDTR_BASE.read()? as _);
+            let idt_limit = VmcsGuest32::IDTR_LIMIT.read()?;
+
+            let ia32_sysenter_cs = VmcsGuest32::IA32_SYSENTER_CS.read()?;
+            let ia32_sysenter_esp = VmcsGuestNW::IA32_SYSENTER_ESP.read()?;
+            let ia32_sysenter_eip = VmcsGuestNW::IA32_SYSENTER_EIP.read()?;
+
             Ok(f.debug_struct("VmxVcpu")
                 .field("guest_regs", &self.guest_regs)
                 .field("rip", &VmcsGuestNW::RIP.read()?)
@@ -1372,10 +1416,32 @@ impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
                 .field("cr0", &VmcsGuestNW::CR0.read()?)
                 .field("cr3", &VmcsGuestNW::CR3.read()?)
                 .field("cr4", &VmcsGuestNW::CR4.read()?)
-                .field("cs", &VmcsGuest16::CS_SELECTOR.read()?)
+                .field("cs_base", &VmcsGuestNW::CS_BASE.read()?)
+                .field("cs_selector", &cs_selector)
+                .field("cs_access_rights", &cs_access_rights)
+                .field("cs_access_rights_raw", &cs_access_rights_raw)
+                .field("ss_base", &VmcsGuestNW::SS_BASE.read()?)
+                .field("ss_selector", &ss_selector)
+                .field("ss_access_rights_raw", &ss_access_rights_raw)
+                .field("ss_access_rights", &ss_access_rights)
+                .field("ds_base", &VmcsGuestNW::DS_BASE.read()?)
+                .field("ds_selector", &ds_selector)
+                .field("ds_access_rights", &ds_access_rights)
                 .field("fs_base", &VmcsGuestNW::FS_BASE.read()?)
+                .field("fs_selector", &fs_selector)
+                .field("fs_access_rights", &fs_access_rights)
                 .field("gs_base", &VmcsGuestNW::GS_BASE.read()?)
-                .field("tss", &VmcsGuest16::TR_SELECTOR.read()?)
+                .field("gs_selector", &gs_selector)
+                .field("gs_access_rights", &gs_access_rights)
+                .field("tr_selector", &tr_selector)
+                .field("tr_access_rights", &tr_access_rights)
+                .field("gdt_base", &gdt_base)
+                .field("gdt_limit", &gdt_limit)
+                .field("idt_base", &idt_base)
+                .field("idt_limit", &idt_limit)
+                .field("ia32_sysenter_cs", &ia32_sysenter_cs)
+                .field("ia32_sysenter_esp", &ia32_sysenter_esp)
+                .field("ia32_sysenter_eip", &ia32_sysenter_eip)
                 .finish())
         })()
         .unwrap()
@@ -1383,18 +1449,20 @@ impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
 }
 
 impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
-    type CreateConfig = ();
+    type CreateConfig = usize;
 
     type SetupConfig = ();
 
     type HostContext = crate::context::LinuxContext;
 
-    fn new(_config: Self::CreateConfig) -> AxResult<Self> {
-        Self::new()
+    fn new(id: Self::CreateConfig) -> AxResult<Self> {
+        Self::new(id)
     }
 
     fn load_context(&self, config: &mut Self::HostContext) -> AxResult {
-        self.load_vmcs_guest(config);
+        info!("Loading context {:#x?}", self);
+
+        self.load_vmcs_guest(config)?;
         Ok(())
     }
 
@@ -1419,8 +1487,23 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+        if self.id == 3 {
+            warn!("Instance vcpu run {:#x?}", self);
+        }
+
         match self.inner_run() {
             Some(exit_info) => Ok(if exit_info.entry_failure {
+                match exit_info.exit_reason {
+                    VmxExitReason::INVALID_GUEST_STATE
+                    | VmxExitReason::MCE_DURING_VMENTRY
+                    | VmxExitReason::MSR_LOAD_FAIL => {}
+                    _ => {
+                        error!("Invalid exit reasion when entry failure: {:#x?}", exit_info);
+                    }
+                };
+
+                warn!("VMX entry failure: {:#x?}", exit_info);
+
                 AxVCpuExitReason::FailEntry {
                     // Todo: get `hardware_entry_failure_reason` somehow.
                     hardware_entry_failure_reason: 0,
