@@ -638,6 +638,10 @@ pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> AxResult {
     Ok(())
 }
 
+pub fn get_ept_pointer() -> HostPhysAddr {
+    HostPhysAddr::from(VmcsControl64::EPTP.read().expect("Failed to read EPTP") as usize)
+}
+
 pub fn instruction_error() -> VmxInstructionError {
     VmcsReadOnly32::VM_INSTRUCTION_ERROR.read().unwrap().into()
 }
