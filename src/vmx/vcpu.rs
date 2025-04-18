@@ -24,7 +24,7 @@ use super::VmxExitInfo;
 use super::as_axerr;
 use super::definitions::VmxExitReason;
 use super::read_vmcs_revision_id;
-use super::structs::{EPTP_LIST_SIZE, EPTPointer, EptpList, IOBitmap, MsrBitmap, VmxRegion};
+use super::structs::{EptpList, IOBitmap, MsrBitmap, VmxRegion};
 use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, interrupt_exit_info,
@@ -861,11 +861,6 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         // Bit 0: EPTP switching
         VmcsControl64::VM_FUNCTION_CONTROLS.write(0b1)?;
 
-        assert!(
-            self.eptp_list.entry_is_set(0),
-            "The First EPTP list entry must be set as initial EPTP."
-        );
-
         VmcsControl64::EPTP_LIST_ADDR.write(self.eptp_list.phys_addr().as_usize() as _)?;
 
         // Pass-through exceptions (except #UD(6)), don't use I/O bitmap, set MSR bitmaps.
@@ -1473,7 +1468,6 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 
     fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
         self.ept_root = Some(ept_root);
-        self.append_eptp_list(0, ept_root)?;
         Ok(())
     }
 
@@ -1487,10 +1481,6 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
-        if self.id == 3 {
-            warn!("Instance vcpu run {:#x?}", self);
-        }
-
         match self.inner_run() {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 match exit_info.exit_reason {
@@ -1503,6 +1493,7 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                 };
 
                 warn!("VMX entry failure: {:#x?}", exit_info);
+                warn!("VCpu {:#x?}", self);
 
                 AxVCpuExitReason::FailEntry {
                     // Todo: get `hardware_entry_failure_reason` somehow.
@@ -1677,44 +1668,11 @@ impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
         self.guest_page_table_query(gva).ok()
     }
 
-    fn append_eptp_list(&mut self, idx: usize, eptp: HostPhysAddr) -> AxResult {
-        if idx >= EPTP_LIST_SIZE {
-            return ax_err!(InvalidInput);
-        }
-
-        if self.eptp_list.entry_is_set(idx) {
-            return ax_err!(InvalidInput);
-        }
-
-        self.eptp_list
-            .set_entry(idx, EPTPointer::from_table_phys(eptp));
-        Ok(())
+    fn current_ept_root(&self) -> HostPhysAddr {
+        vmcs::get_ept_pointer()
     }
 
-    fn remove_eptp_list_entry(&mut self, idx: usize) -> AxResult {
-        if idx >= EPTP_LIST_SIZE {
-            return ax_err!(InvalidInput);
-        }
-        if !self.eptp_list.entry_is_set(idx) {
-            return ax_err!(InvalidInput);
-        }
-
-        self.eptp_list.remove_entry(idx);
-
-        Ok(())
-    }
-
-    fn get_eptp_list_entry(&self, idx: usize) -> AxResult<HostPhysAddr> {
-        if idx >= EPTP_LIST_SIZE {
-            return ax_err!(InvalidInput);
-        }
-        if !self.eptp_list.entry_is_set(idx) {
-            return ax_err!(InvalidInput);
-        }
-        let entry = self.eptp_list.get_entry(idx);
-
-        Ok(HostPhysAddr::from_usize(memory_addr::align_down_4k(
-            entry.bits() as _,
-        )))
+    fn eptp_list_region(&self) -> HostPhysAddr {
+        self.eptp_list.phys_addr()
     }
 }

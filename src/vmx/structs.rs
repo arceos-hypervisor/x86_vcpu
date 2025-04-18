@@ -271,8 +271,6 @@ impl EPTPointer {
     }
 }
 
-pub const EPTP_LIST_SIZE: usize = 512;
-
 /// EPTP list, the 4-KByte structure,
 /// The EPTP list comprises 512 8-Byte entries (each an EPTP value)
 /// and is used by the EPTP-switching VM function (see Section 26.5.6.3).
@@ -289,34 +287,5 @@ impl<H: AxVCpuHal> EptpList<H> {
 
     pub fn phys_addr(&self) -> HostPhysAddr {
         self.frame.start_paddr()
-    }
-
-    pub fn set_entry(&mut self, idx: usize, eptp: EPTPointer) {
-        assert!(idx < EPTP_LIST_SIZE);
-        // Todo: validate eptp refer to 26.5.6.3 EPTP Switching.
-        let ptr = self.frame.as_mut_ptr() as *mut u64;
-        unsafe {
-            ptr.add(idx).write(eptp.bits());
-        }
-    }
-
-    pub fn entry_is_set(&self, idx: usize) -> bool {
-        assert!(idx < EPTP_LIST_SIZE);
-        let ptr = self.frame.as_mut_ptr() as *const u64;
-        unsafe { ptr.add(idx).read() != 0 }
-    }
-
-    pub fn get_entry(&self, idx: usize) -> EPTPointer {
-        assert!(idx < EPTP_LIST_SIZE);
-        let ptr = self.frame.as_mut_ptr() as *const u64;
-        unsafe { EPTPointer::from_bits_truncate(ptr.add(idx).read()) }
-    }
-
-    pub fn remove_entry(&mut self, idx: usize) {
-        assert!(idx < EPTP_LIST_SIZE);
-        let ptr = self.frame.as_mut_ptr() as *mut u64;
-        unsafe {
-            ptr.add(idx).write(0);
-        }
     }
 }
