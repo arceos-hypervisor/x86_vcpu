@@ -812,6 +812,7 @@ macro_rules! vmx_entry_with {
 }
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
+    #[warn(unsafe_attr_outside_unsafe)]
     #[naked]
     /// Enter guest with vmlaunch.
     ///
@@ -824,6 +825,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmx_entry_with!("vmlaunch")
     }
 
+    #[warn(unsafe_attr_outside_unsafe)]
     #[naked]
     /// Enter guest with vmresume.
     ///
@@ -832,6 +834,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmx_entry_with!("vmresume")
     }
 
+    #[warn(unsafe_attr_outside_unsafe)]
     #[naked]
     /// Return after vm-exit.
     ///
