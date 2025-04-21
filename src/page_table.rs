@@ -129,16 +129,13 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
 // private implements
 impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE, H, EPT> {
     fn table_of<'a>(&self, gpa: GuestPhysAddr) -> PagingResult<&'a [PTE]> {
-        let hpa = EPT::guest_phys_to_host_phys(gpa).ok_or_else(|| {
-            warn!("Failed to translate GPA {:?}", gpa);
-            PagingError::NotMapped
-        })?;
+        let hpa = EPT::guest_phys_to_host_phys(gpa)
+            .map(|(hpa, _flags, _pgsize)| hpa)
+            .ok_or_else(|| {
+                warn!("Failed to translate GPA {:?}", gpa);
+                PagingError::NotMapped
+            })?;
         let ptr = H::phys_to_virt(hpa).as_ptr() as _;
-
-        // debug!(
-        //     "GuestPageTable64::table_of gpa: {:?} hpa: {:?} ptr: {:p}",
-        //     gpa, hpa, ptr
-        // );
 
         Ok(unsafe { core::slice::from_raw_parts(ptr, ENTRY_COUNT) })
     }
