@@ -812,11 +812,10 @@ macro_rules! vmx_entry_with {
 }
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
-    #[warn(unsafe_attr_outside_unsafe)]
-    #[naked]
+    #[unsafe(naked)]
     /// Enter guest with vmlaunch.
     ///
-    /// `#[naked]` is essential here, without it the rust compiler will think `&mut self` is not used and won't give us correct %rdi.
+    /// `#[unsafe(naked)]` is essential here, without it the rust compiler will think `&mut self` is not used and won't give us correct %rdi.
     ///
     /// This function itself never returns, but [`Self::vmx_exit`] will do the return for this.
     ///
@@ -825,8 +824,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmx_entry_with!("vmlaunch")
     }
 
-    #[warn(unsafe_attr_outside_unsafe)]
-    #[naked]
+    #[unsafe(naked)]
     /// Enter guest with vmresume.
     ///
     /// See [`Self::vmx_launch`] for detail.
@@ -834,8 +832,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmx_entry_with!("vmresume")
     }
 
-    #[warn(unsafe_attr_outside_unsafe)]
-    #[naked]
+    #[unsafe(naked)]
     /// Return after vm-exit.
     ///
     /// The return value is a dummy value.
