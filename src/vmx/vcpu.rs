@@ -812,10 +812,10 @@ macro_rules! vmx_entry_with {
 }
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
-    #[unsafe(naked)]
+    #[naked]
     /// Enter guest with vmlaunch.
     ///
-    /// `#[unsafe(naked)]` is essential here, without it the rust compiler will think `&mut self` is not used and won't give us correct %rdi.
+    /// `#[naked]` is essential here, without it the rust compiler will think `&mut self` is not used and won't give us correct %rdi.
     ///
     /// This function itself never returns, but [`Self::vmx_exit`] will do the return for this.
     ///
@@ -824,7 +824,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmx_entry_with!("vmlaunch")
     }
 
-    #[unsafe(naked)]
+    #[naked]
     /// Enter guest with vmresume.
     ///
     /// See [`Self::vmx_launch`] for detail.
@@ -832,7 +832,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmx_entry_with!("vmresume")
     }
 
-    #[unsafe(naked)]
+    #[naked]
     /// Return after vm-exit.
     ///
     /// The return value is a dummy value.
