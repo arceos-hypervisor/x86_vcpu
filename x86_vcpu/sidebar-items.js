@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["VmxExitReason"],"fn":["has_hardware_support"],"struct":["GeneralRegisters","GuestPageWalkInfo","VmxArchPerCpuState","VmxArchVCpu","VmxExitInfo","VmxInterruptInfo","VmxIoExitInfo"]};
