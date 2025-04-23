@@ -783,25 +783,30 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
-        let mut val = CpuCtrl2::ENABLE_EPT
-            | CpuCtrl2::UNRESTRICTED_GUEST
-            | CpuCtrl2::ENABLE_USER_WAIT_PAUSE
-            | CpuCtrl2::ENABLE_VM_FUNCTIONS;
+        let mut val =
+            CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST | CpuCtrl2::ENABLE_VM_FUNCTIONS;
+
         if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers() {
             if features.has_rdtscp() {
                 val |= CpuCtrl2::ENABLE_RDTSCP;
             }
         }
+
         if let Some(features) = raw_cpuid.get_extended_feature_info() {
             if features.has_invpcid() {
                 val |= CpuCtrl2::ENABLE_INVPCID;
             }
+            if features.has_waitpkg() {
+                val |= CpuCtrl2::ENABLE_USER_WAIT_PAUSE;
+            }
         }
+
         if let Some(features) = raw_cpuid.get_extended_state_info() {
             if features.has_xsaves_xrstors() {
                 val |= CpuCtrl2::ENABLE_XSAVES_XRSTORS;
             }
         }
+
         vmcs::set_control(
             VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_PROCBASED_CTLS2,
