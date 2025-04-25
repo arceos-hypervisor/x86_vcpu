@@ -2,7 +2,6 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
-use x86_64::VirtAddr;
 
 use bit_field::BitField;
 use raw_cpuid::CpuId;
@@ -10,6 +9,7 @@ use x86::bits64::vmx;
 use x86::controlregs::Xcr0;
 use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
+use x86_64::VirtAddr;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
 use page_table_entry::x86_64::X64PTE;
@@ -27,7 +27,8 @@ use super::read_vmcs_revision_id;
 use super::structs::{EptpList, IOBitmap, MsrBitmap, VmxRegion};
 use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
-    VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, interrupt_exit_info,
+    VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, exit_qualification,
+    interrupt_exit_info,
 };
 use crate::LinuxContext;
 use crate::page_table::GuestPageTable64;
@@ -467,7 +468,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
     pub fn decode_instruction(&self, rip: GuestVirtAddr, instr_len: usize) -> AxResult {
         use alloc::string::String;
-        use iced_x86::{Decoder, DecoderOptions, Formatter, IntelFormatter, MasmFormatter};
+        use iced_x86::{Decoder, DecoderOptions, Formatter, IntelFormatter};
 
         let bytes = self.read_guest_memory(rip, instr_len)?;
         let mut decoder = Decoder::with_ip(
@@ -477,21 +478,11 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             DecoderOptions::NONE,
         );
         let instr = decoder.decode();
-
-        debug!("Decoded instruction: {:#x?}", instr);
-
         let mut output = String::new();
         let mut formattor = IntelFormatter::new();
         formattor.format(&instr, &mut output);
 
-        debug!("Decoded instruction Intel formatter: {}", output);
-
-        let mut output = String::new();
-        let mut formattor = MasmFormatter::new();
-        formattor.format(&instr, &mut output);
-
-        debug!("Decoded instruction MasmFormatter: {}", output);
-
+        debug!("Decoded instruction @Intel formatter: {}", output);
         Ok(())
     }
 }
@@ -651,11 +642,6 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 concat_idents!($reg, _ACCESS_RIGHTS).write($seg.access_rights.bits())?;
             }};
         }
-
-        debug!(
-            "setup_vmcs_guest_from_ctx: CS access rights: {:?}",
-            linux.cs.access_rights
-        );
 
         set_guest_segment!(linux.es, ES);
         set_guest_segment!(linux.cs, CS);
@@ -1460,7 +1446,7 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     }
 
     fn load_context(&self, config: &mut Self::HostContext) -> AxResult {
-        info!("Loading context {:#x?}", self);
+        // info!("Loading context {:#x?}", self);
 
         self.load_vmcs_guest(config)?;
         Ok(())
@@ -1497,7 +1483,10 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                     }
                 };
 
+                let exit_qualification = exit_qualification()?;
+
                 warn!("VMX entry failure: {:#x?}", exit_info);
+                warn!("Exit qualification: {:#x?}", exit_qualification);
                 warn!("VCpu {:#x?}", self);
 
                 AxVCpuExitReason::FailEntry {
@@ -1562,13 +1551,8 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                             }
                         }
                     }
-                    VmxExitReason::EPT_VIOLATION | VmxExitReason::TRIPLE_FAULT => {
+                    VmxExitReason::EPT_VIOLATION => {
                         let ept_info = self.nested_page_fault_info()?;
-
-                        warn!("VMX EPT-Exit: {:#x?} of {:#x?}", ept_info, exit_info);
-
-                        warn!("Vcpu {:#x?}", self);
-
                         self.decode_instruction(
                             GuestVirtAddr::from_usize(exit_info.guest_rip),
                             exit_info.exit_instruction_length as _,
@@ -1578,6 +1562,11 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                             addr: ept_info.fault_guest_paddr,
                             access_flags: ept_info.access_flags,
                         }
+                    }
+                    VmxExitReason::TRIPLE_FAULT => {
+                        error!("VMX triple fault: {:#x?}", exit_info);
+                        error!("VCpu {:#x?}", self);
+                        AxVCpuExitReason::Halt
                     }
                     _ => {
                         warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);

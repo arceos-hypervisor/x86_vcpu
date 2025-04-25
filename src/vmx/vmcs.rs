@@ -776,3 +776,7 @@ pub fn cr_access_info() -> AxResult<CrAccessInfo> {
         lmsw_source_data: qualification.get_bits(16..32) as u8,
     })
 }
+
+pub fn exit_qualification() -> AxResult<usize> {
+    VmcsReadOnlyNW::EXIT_QUALIFICATION.read()
+}
