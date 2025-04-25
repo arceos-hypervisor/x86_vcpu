@@ -119,6 +119,7 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
     ) -> PagingResult<(GuestPhysAddr, MappingFlags, PageSize)> {
         let (entry, size) = self.get_entry(vaddr)?;
         if entry.is_unused() {
+            error!("GuestPT64 query {:?} Entry is unused", vaddr);
             return Err(PagingError::NotMapped);
         }
         let off = size.align_offset(vaddr.into());
@@ -142,8 +143,10 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
 
     fn next_table<'a>(&self, entry: &PTE) -> PagingResult<&'a [PTE]> {
         if !entry.is_present() {
+            error!("GuestPT64 next_table {:?} Entry is not present", entry);
             Err(PagingError::NotMapped)
         } else if entry.is_huge() {
+            error!("GuestPT64 next_table {:?} Entry is huge", entry);
             Err(PagingError::MappedToHugePage)
         } else {
             self.table_of(entry.paddr().into())
