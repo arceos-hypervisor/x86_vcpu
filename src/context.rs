@@ -1,7 +1,8 @@
-use x86::{segmentation, task};
+use x86::segmentation::SegmentSelector;
+use x86::{Ring, segmentation, task};
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::{lgdt, lidt, sidt};
-use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags, Cr4, Cr4Flags};
+use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags, Cr4, Cr4Flags, Efer, EferFlags};
 use x86_64::structures::DescriptorTablePointer;
 use x86_64::{addr::PhysAddr, structures::paging::PhysFrame};
 
@@ -38,7 +39,7 @@ pub struct LinuxContext {
     pub cr3: u64,
     pub cr4: Cr4Flags,
 
-    pub efer: u64,
+    pub efer: EferFlags,
     pub star: u64,
     pub lstar: u64,
     pub cstar: u64,
@@ -87,7 +88,7 @@ impl Default for LinuxContext {
             cr0: Cr0Flags::empty(),
             cr3: 0,
             cr4: Cr4Flags::empty(),
-            efer: 0,
+            efer: EferFlags::empty(),
             star: 0,
             lstar: 0,
             cstar: 0,
@@ -146,7 +147,7 @@ impl LinuxContext {
             cr0: Cr0::read(),
             cr3: Cr3::read().0.start_address().as_u64(),
             cr4: Cr4::read(),
-            efer: Msr::IA32_EFER.read(),
+            efer: Efer::read(),
             star: Msr::IA32_STAR.read(),
             lstar: Msr::IA32_LSTAR.read(),
             cstar: Msr::IA32_CSTAR.read(),
@@ -161,6 +162,87 @@ impl LinuxContext {
         }
     }
 
+    pub fn construct_guest64(rip: u64, cr3: u64) -> Self {
+        Self {
+            rsp: 0,
+            rip,
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            rbx: 0,
+            rbp: 0,
+            es: Segment::invalid(),
+            cs: Segment {
+                selector: SegmentSelector::new(1, Ring::Ring0),
+                base: 0,
+                limit: 0xffff,
+                access_rights: SegmentAccessRights::ACCESSED
+                    | SegmentAccessRights::WRITABLE
+                    | SegmentAccessRights::EXECUTABLE
+                    | SegmentAccessRights::CODE_DATA
+                    | SegmentAccessRights::PRESENT
+                    | SegmentAccessRights::LONG_MODE
+                    | SegmentAccessRights::GRANULARITY,
+            },
+            ss: Segment {
+                selector: SegmentSelector::new(2, Ring::Ring0),
+                base: 0,
+                limit: 0xffff,
+                access_rights: SegmentAccessRights::ACCESSED
+                    | SegmentAccessRights::WRITABLE
+                    | SegmentAccessRights::CODE_DATA
+                    | SegmentAccessRights::PRESENT
+                    | SegmentAccessRights::DB
+                    | SegmentAccessRights::GRANULARITY,
+            },
+            ds: Segment::invalid(),
+            fs: Segment::invalid(),
+            gs: Segment::invalid(),
+            tss: Segment {
+                selector: SegmentSelector::new(2, Ring::Ring0),
+                base: 0,
+                limit: 0,
+                access_rights: SegmentAccessRights::ACCESSED
+                    | SegmentAccessRights::WRITABLE
+                    | SegmentAccessRights::EXECUTABLE
+                    | SegmentAccessRights::PRESENT,
+            },
+            gdt: DescriptorTablePointer {
+                limit: 0,
+                base: VirtAddr::zero(),
+            },
+            idt: DescriptorTablePointer {
+                limit: 0,
+                base: VirtAddr::zero(),
+            },
+            cr0: Cr0Flags::PROTECTED_MODE_ENABLE
+                | Cr0Flags::MONITOR_COPROCESSOR
+                | Cr0Flags::EXTENSION_TYPE
+                | Cr0Flags::NUMERIC_ERROR
+                | Cr0Flags::WRITE_PROTECT
+                | Cr0Flags::ALIGNMENT_MASK
+                | Cr0Flags::PAGING,
+            cr3,
+            cr4: Cr4Flags::PHYSICAL_ADDRESS_EXTENSION | Cr4Flags::PAGE_GLOBAL,
+            efer: EferFlags::LONG_MODE_ENABLE
+                | EferFlags::LONG_MODE_ACTIVE
+                | EferFlags::NO_EXECUTE_ENABLE
+                | EferFlags::SYSTEM_CALL_EXTENSIONS,
+            star: 0,
+            lstar: 0,
+            cstar: 0,
+            fmask: 0,
+            ia32_sysenter_cs: 0,
+            ia32_sysenter_esp: 0,
+            ia32_sysenter_eip: 0,
+            kernel_gsbase: 0,
+            pat: 0,
+            mtrr_def_type: 0,
+            xstate: XState::default(),
+        }
+    }
+
     /// Restore system registers.
     pub fn restore(&self) {
         unsafe {
@@ -168,7 +250,7 @@ impl LinuxContext {
             Msr::IA32_SYSENTER_ESP.write(self.ia32_sysenter_esp);
             Msr::IA32_SYSENTER_EIP.write(self.ia32_sysenter_eip);
 
-            Msr::IA32_EFER.write(self.efer);
+            Efer::write(self.efer);
             Msr::IA32_STAR.write(self.star);
             Msr::IA32_LSTAR.write(self.lstar);
             Msr::IA32_CSTAR.write(self.cstar);

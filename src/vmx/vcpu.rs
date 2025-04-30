@@ -676,7 +676,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsGuest32::VMX_PREEMPTION_TIMER_VALUE.write(0)?;
 
         VmcsGuest64::IA32_PAT.write(linux.pat)?;
-        VmcsGuest64::IA32_EFER.write(linux.efer)?;
+        VmcsGuest64::IA32_EFER.write(linux.efer.bits())?;
 
         Ok(())
     }
