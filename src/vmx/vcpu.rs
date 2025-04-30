@@ -112,6 +112,11 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             vmx::vmptrld(self.vmcs.phys_addr().as_usize() as u64).map_err(as_axerr)?;
         }
         self.setup_vmcs_host()?;
+
+        if self.id == 3 {
+            warn!("VMX: bind_to_current_processor done, {:#x?}", self);
+        }
+
         Ok(())
     }
 
@@ -147,6 +152,32 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         }
     }
 
+    /// Perform guest state checking according to
+    /// SDM 27.3.1 Checks on the Guest State Area
+    fn check_guest_state(&self) -> AxResult {
+        use super::vmcs::controls::*;
+
+        // Check if the guest is in 64-bit mode
+        let entry_control =
+            EntryControls::from_bits_truncate(VmcsControl32::VMENTRY_CONTROLS.read()?);
+        if entry_control.contains(EntryControls::IA32E_MODE_GUEST) {
+            let tr_access_rights =
+                SegmentAccessRights::from_bits_truncate(VmcsGuest32::TR_ACCESS_RIGHTS.read()?);
+            if !tr_access_rights.contains(SegmentAccessRights::TSS_BUSY) {
+                warn!(
+                    "TR. If the guest will be IA-32e mode, the Type must be 11 (64-bit busy TSS)"
+                );
+            }
+            if tr_access_rights.contains(SegmentAccessRights::CODE_DATA) {
+                warn!("TR. Bit 4 (S). S must be 0.");
+            }
+            if !tr_access_rights.contains(SegmentAccessRights::PRESENT) {
+                warn!("TR. Bit 7 (P). P must be 1.");
+            }
+        }
+        Ok(())
+    }
+
     /// Run the guest. It returns when a vm-exit happens and returns the vm-exit if it cannot be handled by this [`VmxVcpu`] itself.
     pub fn inner_run(&mut self) -> Option<VmxExitInfo> {
         // Inject pending events
@@ -156,6 +187,15 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         // Run guest
         self.load_guest_xstate();
+
+        match self.check_guest_state() {
+            Ok(_) => {}
+            Err(e) => {
+                error!("Failed to check guest state: {:?}", e);
+                return None;
+            }
+        }
+
         unsafe {
             if self.launched {
                 self.vmx_resume();
@@ -474,6 +514,15 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         }
 
         self.setup_vmcs_control(ept_root, is_guest)?;
+
+        if self.id == 3 {
+            warn!("VMX: setup_vmcs done, {:#x?}", self);
+            self.unbind_from_current_processor()?;
+
+            info!("Bind again to check VMCS region");
+            self.bind_to_current_processor()?;
+        }
+
         self.unbind_from_current_processor()?;
         Ok(())
     }
@@ -519,6 +568,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     /// to avoid complexity and minimize the modification,
     /// we just keep them separated.
     fn setup_vmcs_guest_from_ctx(&mut self, host_ctx: LinuxContext) -> AxResult {
+        if self.id == 3 {
+            debug!("setup_vmcs_guest_from_ctx: {:#x?}", host_ctx);
+        }
+
         let linux = host_ctx;
 
         self.set_cr(0, linux.cr0.bits());
@@ -764,24 +817,48 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         linux.cr0 = Cr0Flags::from_bits_truncate(VmcsGuestNW::CR0.read()? as _);
         linux.cr3 = VmcsGuestNW::CR3.read()? as _;
         linux.cr4 = Cr4Flags::from_bits_truncate(VmcsGuestNW::CR4.read()? as _);
-
+        // ES
         linux.es.selector = SegmentSelector::from_raw(VmcsGuest16::ES_SELECTOR.read()?);
-
-        linux.cs.selector = SegmentSelector::from_raw(VmcsGuest16::CS_SELECTOR.read()?);
+        linux.es.base = VmcsGuestNW::ES_BASE.read()? as _;
+        linux.es.limit = VmcsGuest32::ES_LIMIT.read()? as _;
+        linux.es.access_rights =
+            SegmentAccessRights::from_bits_truncate(VmcsGuest32::ES_ACCESS_RIGHTS.read()?);
         // CS:
-        // If the Type is 9 or 11 (non-conforming code segment), the DPL must equal the DPL in the access-rights field for SS.
+        linux.cs.selector = SegmentSelector::from_raw(VmcsGuest16::CS_SELECTOR.read()?);
         linux.cs.access_rights =
             SegmentAccessRights::from_bits_truncate(VmcsGuest32::CS_ACCESS_RIGHTS.read()?);
+        linux.cs.base = VmcsGuestNW::CS_BASE.read()? as _;
+        linux.cs.limit = VmcsGuest32::CS_LIMIT.read()? as _;
+        // SS
         linux.ss.selector = SegmentSelector::from_raw(VmcsGuest16::SS_SELECTOR.read()?);
         linux.ss.access_rights =
             SegmentAccessRights::from_bits_truncate(VmcsGuest32::SS_ACCESS_RIGHTS.read()?);
-
+        linux.ss.base = VmcsGuestNW::SS_BASE.read()? as _;
+        linux.ss.limit = VmcsGuest32::SS_LIMIT.read()? as _;
+        // DS
         linux.ds.selector = SegmentSelector::from_raw(VmcsGuest16::DS_SELECTOR.read()?);
+        linux.ds.base = VmcsGuestNW::DS_BASE.read()? as _;
+        linux.ds.limit = VmcsGuest32::DS_LIMIT.read()? as _;
+        linux.ds.access_rights =
+            SegmentAccessRights::from_bits_truncate(VmcsGuest32::DS_ACCESS_RIGHTS.read()?);
+        // FS
         linux.fs.selector = SegmentSelector::from_raw(VmcsGuest16::FS_SELECTOR.read()?);
         linux.fs.base = VmcsGuestNW::FS_BASE.read()? as _;
+        linux.fs.limit = VmcsGuest32::FS_LIMIT.read()? as _;
+        linux.fs.access_rights =
+            SegmentAccessRights::from_bits_truncate(VmcsGuest32::FS_ACCESS_RIGHTS.read()?);
+        // GS
         linux.gs.selector = SegmentSelector::from_raw(VmcsGuest16::GS_SELECTOR.read()?);
         linux.gs.base = VmcsGuestNW::GS_BASE.read()? as _;
+        linux.gs.limit = VmcsGuest32::GS_LIMIT.read()? as _;
+        linux.gs.access_rights =
+            SegmentAccessRights::from_bits_truncate(VmcsGuest32::GS_ACCESS_RIGHTS.read()?);
+        // TSS
         linux.tss.selector = SegmentSelector::from_raw(VmcsGuest16::TR_SELECTOR.read()?);
+        linux.tss.access_rights =
+            SegmentAccessRights::from_bits_truncate(VmcsGuest32::TR_ACCESS_RIGHTS.read()?);
+        linux.tss.base = VmcsGuestNW::TR_BASE.read()? as _;
+        linux.tss.limit = VmcsGuest32::TR_LIMIT.read()? as _;
 
         linux.gdt.base = VirtAddr::new(VmcsGuestNW::GDTR_BASE.read()? as _);
         linux.gdt.limit = VmcsGuest32::GDTR_LIMIT.read()? as _;
@@ -1279,8 +1356,8 @@ impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
             let gs_access_rights =
                 SegmentAccessRights::from_bits_truncate(VmcsGuest32::GS_ACCESS_RIGHTS.read()?);
             let tr_selector = SegmentSelector::from_raw(VmcsGuest16::TR_SELECTOR.read()?);
-            let tr_access_rights =
-                SegmentAccessRights::from_bits_truncate(VmcsGuest32::TR_ACCESS_RIGHTS.read()?);
+            let tr_access_rights_raw = VmcsGuest32::TR_ACCESS_RIGHTS.read()?;
+            let tr_access_rights = SegmentAccessRights::from_bits_truncate(tr_access_rights_raw);
             let gdt_base = VirtAddr::new(VmcsGuestNW::GDTR_BASE.read()? as _);
             let gdt_limit = VmcsGuest32::GDTR_LIMIT.read()?;
             let idt_base = VirtAddr::new(VmcsGuestNW::IDTR_BASE.read()? as _);
@@ -1291,6 +1368,7 @@ impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
             let ia32_sysenter_eip = VmcsGuestNW::IA32_SYSENTER_EIP.read()?;
 
             Ok(f.debug_struct("VmxVcpu")
+                .field("ID", &self.id)
                 .field("guest_regs", &self.guest_regs)
                 .field("rip", &VmcsGuestNW::RIP.read()?)
                 .field("rsp", &VmcsGuestNW::RSP.read()?)
@@ -1316,6 +1394,7 @@ impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
                 .field("gs_selector", &gs_selector)
                 .field("gs_access_rights", &gs_access_rights)
                 .field("tr_selector", &tr_selector)
+                .field("tr_access_rights_raw", &tr_access_rights_raw)
                 .field("tr_access_rights", &tr_access_rights)
                 .field("gdt_base", &gdt_base)
                 .field("gdt_limit", &gdt_limit)
@@ -1368,6 +1447,10 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+        if self.id == 3 {
+            warn!("VMX run {:#x?}", self);
+        }
+
         match self.inner_run() {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 match exit_info.exit_reason {
