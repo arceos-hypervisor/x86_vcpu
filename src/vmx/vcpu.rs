@@ -42,113 +42,12 @@ const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
 
-pub struct XState {
-    host_xcr0: u64,
-    guest_xcr0: u64,
-    host_xss: u64,
-    guest_xss: u64,
-
-    xsave_available: bool,
-    xsaves_available: bool,
-}
-
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
     Real,
     Protected,
     Compatibility, // IA-32E mode (CS.L = 0)
     Mode64,        // IA-32E mode (CS.L = 1)
-}
-
-impl XState {
-    /// Create a new [`XState`] instance with current host state
-    fn new() -> Self {
-        // Check if XSAVE is available
-        let xsave_available = Self::xsave_available();
-        // Check if XSAVES and XRSTORS (as well as IA32_XSS) are available
-        let xsaves_available = if xsave_available {
-            Self::xsaves_available()
-        } else {
-            false
-        };
-
-        // Read XCR0 iff XSAVE is available
-        let xcr0 = if xsave_available {
-            unsafe { xcr0_read().bits() }
-        } else {
-            0
-        };
-        // Read IA32_XSS iff XSAVES is available
-        let xss = if xsaves_available {
-            Msr::IA32_XSS.read()
-        } else {
-            0
-        };
-
-        Self {
-            host_xcr0: xcr0,
-            guest_xcr0: xcr0,
-            host_xss: xss,
-            guest_xss: xss,
-            xsave_available,
-            xsaves_available,
-        }
-    }
-
-    /// Enable extended processor state management instructions, including XGETBV and XSAVE.
-    pub fn enable_xsave() {
-        if Self::xsave_available() {
-            unsafe { Cr4::write(Cr4::read() | Cr4Flags::OSXSAVE) };
-        }
-    }
-
-    /// Check if XSAVE is available on the current CPU.
-    pub fn xsave_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_feature_info()
-            .map(|f| f.has_xsave())
-            .unwrap_or(false)
-    }
-
-    /// Check if XSAVES and XRSTORS (as well as IA32_XSS) are available on the current CPU.
-    pub fn xsaves_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_extended_state_info()
-            .map(|f| f.has_xsaves_xrstors())
-            .unwrap_or(false)
-    }
-
-    /// Save the current host XCR0 and IA32_XSS values and load the guest values.
-    pub fn switch_to_guest(&mut self) {
-        unsafe {
-            if self.xsave_available {
-                self.host_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.guest_xcr0));
-
-                if self.xsaves_available {
-                    self.host_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.guest_xss);
-                }
-            }
-        }
-    }
-
-    /// Save the current guest XCR0 and IA32_XSS values and load the host values.
-    pub fn switch_to_host(&mut self) {
-        unsafe {
-            if self.xsave_available {
-                self.guest_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.host_xcr0));
-
-                if self.xsaves_available {
-                    self.guest_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.host_xss);
-                }
-            }
-        }
-    }
 }
 
 const MSR_IA32_EFER_LMA_BIT: u64 = 1 << 10;
@@ -169,10 +68,7 @@ pub struct VmxVcpu<H: AxVCpuHal> {
 
     pending_events: VecDeque<(u8, Option<u32>)>,
     // xstate: XState,
-    /// XState used by the guest OS, loaded before running the guest.
-    guest_xstate: XState,
-    /// XState used by the hypervisor itself, stored before running the guest.
-    cur_xstate: XState,
+    xstate: XState,
     entry: Option<GuestPhysAddr>,
     ept_root: Option<HostPhysAddr>,
 
@@ -191,8 +87,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             msr_bitmap: MsrBitmap::passthrough_all()?,
             eptp_list: EptpList::new()?,
             pending_events: VecDeque::with_capacity(8),
-            guest_xstate: XState::new(),
-            cur_xstate: XState::new(),
+            xstate: XState::new(),
             entry: None,
             ept_root: None,
             id,
@@ -1315,7 +1210,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 })
                 .ok_or(ax_err_type!(InvalidInput))
                 .and_then(|x| {
-                    self.guest_xstate.xcr0 = x;
+                    self.xstate.guest_xcr0 = x.bits();
                     self.advance_rip(VM_EXIT_INSTR_LEN_XSETBV)
                 })
         } else {
@@ -1329,7 +1224,8 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     ///
     /// This function is generally called before VM-entry.
     fn load_guest_xstate(&mut self) {
-        self.xstate.switch_to_guest();
+        // FIXME: Linux will throw a UD exception if we save/restore xstate.
+        // self.xstate.switch_to_guest();
     }
 
     /// Save the current guest state to the vcpu,
@@ -1337,7 +1233,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     ///
     /// This function is generally called after VM-exit.
     fn load_host_xstate(&mut self) {
-        self.xstate.switch_to_host();
+        // self.xstate.switch_to_host();
     }
 }
 

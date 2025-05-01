@@ -9,7 +9,6 @@ use x86_64::{addr::PhysAddr, structures::paging::PhysFrame};
 use crate::msr::Msr;
 use crate::regs::GeneralRegisters;
 use crate::segmentation::{Segment, SegmentAccessRights};
-use crate::xstate::XState;
 
 const SAVED_LINUX_REGS: usize = 8;
 
@@ -52,8 +51,7 @@ pub struct LinuxContext {
     pub kernel_gsbase: u64,
     pub pat: u64,
     pub mtrr_def_type: u64,
-
-    pub xstate: XState,
+    // TODO: xstate
 }
 
 unsafe impl Send for LinuxContext {}
@@ -99,7 +97,6 @@ impl Default for LinuxContext {
             kernel_gsbase: 0,
             pat: 0,
             mtrr_def_type: 0,
-            xstate: XState::default(),
         }
     }
 }
@@ -158,7 +155,6 @@ impl LinuxContext {
             kernel_gsbase: Msr::IA32_KERNEL_GSBASE.read(),
             pat: Msr::IA32_PAT.read(),
             mtrr_def_type: Msr::IA32_MTRR_DEF_TYPE.read(),
-            xstate: XState::new(),
         }
     }
 
@@ -239,7 +235,6 @@ impl LinuxContext {
             kernel_gsbase: 0,
             pat: 0,
             mtrr_def_type: 0,
-            xstate: XState::default(),
         }
     }
 
