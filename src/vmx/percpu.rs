@@ -84,7 +84,8 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
         // Get VMCS revision identifier in IA32_VMX_BASIC MSR.
         let vmx_basic = VmxBasic::read();
         if vmx_basic.region_size as usize != PAGE_SIZE {
-            return ax_err!(Unsupported);
+            // return ax_err!(Unsupported);
+            warn!("vmx_basic.region_size is not 4K {:#x?}", vmx_basic);
         }
         if vmx_basic.mem_type != VmxBasic::VMX_MEMORY_TYPE_WRITE_BACK {
             return ax_err!(Unsupported);

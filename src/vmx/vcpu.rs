@@ -642,7 +642,12 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             Msr::IA32_VMX_PINBASED_CTLS.read() as u32,
             // (PinCtrl::NMI_EXITING | PinCtrl::EXTERNAL_INTERRUPT_EXITING).bits(),
             // (PinCtrl::NMI_EXITING | PinCtrl::VMX_PREEMPTION_TIMER).bits(),
-            PinCtrl::NMI_EXITING.bits(),
+            // PinCtrl::NMI_EXITING.bits(),
+            if is_guest {
+                PinCtrl::NMI_EXITING.bits()
+            } else {
+                0 // Do not intercept NMI in for host VM now.
+            },
             0,
         )?;
 
@@ -738,8 +743,6 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsControl32::VMEXIT_MSR_LOAD_COUNT.write(0)?;
         VmcsControl32::VMENTRY_MSR_LOAD_COUNT.write(0)?;
 
-        // TODO: figure out why we mask it.
-        VmcsControlNW::CR4_GUEST_HOST_MASK.write(0)?;
         VmcsControl32::CR3_TARGET_COUNT.write(0)?;
 
         // 25.6.14 VM-Function Controls
@@ -1143,7 +1146,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             EAX_FREQUENCY_INFO => {
                 /// Timer interrupt frequencyin Hz.
                 /// Todo: this should be the same as `axconfig::TIMER_FREQUENCY` defined in ArceOS's config file.
-                const TIMER_FREQUENCY_MHZ: u32 = 3_000;
+                const TIMER_FREQUENCY_MHZ: u32 = 4_000;
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
                     warn!(
@@ -1263,6 +1266,15 @@ fn get_tr_base(tr: SegmentSelector, gdt: &DescriptorTablePointer<u64>) -> u64 {
 impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
     fn fmt(&self, f: &mut Formatter) -> Result {
         (|| -> AxResult<Result> {
+            let cr0_raw = VmcsGuestNW::CR0.read()? as u64;
+            let cr0 = Cr0Flags::from_bits_truncate(cr0_raw);
+
+            let cr4_raw = VmcsGuestNW::CR4.read()? as u64;
+            let cr4 = Cr4Flags::from_bits_truncate(cr4_raw);
+
+            let efer_raw = VmcsGuest64::IA32_EFER.read()?;
+            let efer = EferFlags::from_bits_truncate(efer_raw);
+
             let cs_selector = SegmentSelector::from_raw(VmcsGuest16::CS_SELECTOR.read()?);
             let cs_access_rights_raw = VmcsGuest32::CS_ACCESS_RIGHTS.read()?;
             let cs_access_rights = SegmentAccessRights::from_bits_truncate(cs_access_rights_raw);
@@ -1295,9 +1307,11 @@ impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
                 .field("rip", &VmcsGuestNW::RIP.read()?)
                 .field("rsp", &VmcsGuestNW::RSP.read()?)
                 .field("rflags", &VmcsGuestNW::RFLAGS.read()?)
-                .field("cr0", &VmcsGuestNW::CR0.read()?)
+                .field("cr0_raw", &cr0_raw)
+                .field("cr0", &cr0)
                 .field("cr3", &VmcsGuestNW::CR3.read()?)
-                .field("cr4", &VmcsGuestNW::CR4.read()?)
+                .field("cr4_raw", &cr4_raw)
+                .field("cr4", &cr4)
                 .field("cs_base", &VmcsGuestNW::CS_BASE.read()?)
                 .field("cs_selector", &cs_selector)
                 .field("cs_access_rights", &cs_access_rights)
@@ -1321,6 +1335,8 @@ impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
                 .field("gdt_limit", &gdt_limit)
                 .field("idt_base", &idt_base)
                 .field("idt_limit", &idt_limit)
+                .field("efer_raw", &efer_raw)
+                .field("efer", &efer)
                 .field("ia32_sysenter_cs", &ia32_sysenter_cs)
                 .field("ia32_sysenter_esp", &ia32_sysenter_esp)
                 .field("ia32_sysenter_eip", &ia32_sysenter_eip)
@@ -1462,7 +1478,17 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                     VmxExitReason::TRIPLE_FAULT => {
                         error!("VMX triple fault: {:#x?}", exit_info);
                         error!("VCpu {:#x?}", self);
+
+                        self.decode_instruction(
+                            GuestVirtAddr::from_usize(exit_info.guest_rip),
+                            exit_info.exit_instruction_length as _,
+                        )?;
+
                         AxVCpuExitReason::Halt
+                    }
+                    VmxExitReason::INIT => {
+                        warn!("VMX INIT: {:#x?}, just bring down current VM", exit_info);
+                        AxVCpuExitReason::SystemDown
                     }
                     _ => {
                         warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
@@ -1564,5 +1590,9 @@ impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
 
     fn eptp_list_region(&self) -> HostPhysAddr {
         self.eptp_list.phys_addr()
+    }
+
+    fn dump(&self) {
+        warn!("Dumping VmxVcpu {:#x?}", self);
     }
 }
