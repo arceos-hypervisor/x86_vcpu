@@ -597,7 +597,7 @@ pub fn set_control(
     let allowed0 = cap as u32;
     let allowed1 = (cap >> 32) as u32;
     assert_eq!(allowed0 & allowed1, allowed0);
-    debug!(
+    trace!(
         "set {:?}: {:#x} (+{:#x}, -{:#x})",
         control, old_value, set, clear
     );
@@ -638,6 +638,10 @@ pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> AxResult {
     Ok(())
 }
 
+pub fn get_ept_pointer() -> HostPhysAddr {
+    HostPhysAddr::from(VmcsControl64::EPTP.read().expect("Failed to read EPTP") as usize)
+}
+
 pub fn instruction_error() -> VmxInstructionError {
     VmcsReadOnly32::VM_INSTRUCTION_ERROR.read().unwrap().into()
 }
@@ -660,7 +664,7 @@ pub fn raw_interrupt_exit_info() -> AxResult<u32> {
 }
 
 pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
-    // SDM Vol. 3C, Section 24.9.2
+    // SDM Vol. 3C, Section 25.9.2
     let info = VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()?;
     Ok(VmxInterruptInfo {
         vector: info.get_bits(0..8) as u8,
@@ -771,4 +775,8 @@ pub fn cr_access_info() -> AxResult<CrAccessInfo> {
         gpr: qualification.get_bits(8..12) as u8,
         lmsw_source_data: qualification.get_bits(16..32) as u8,
     })
+}
+
+pub fn exit_qualification() -> AxResult<usize> {
+    VmcsReadOnlyNW::EXIT_QUALIFICATION.read()
 }

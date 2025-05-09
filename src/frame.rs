@@ -1,5 +1,7 @@
 use core::marker::PhantomData;
 
+use page_table_multiarch::PagingHandler;
+
 use axaddrspace::HostPhysAddr;
 use axerrno::{AxResult, ax_err_type};
 
@@ -17,7 +19,7 @@ pub struct PhysFrame<H: AxVCpuHal> {
 
 impl<H: AxVCpuHal> PhysFrame<H> {
     pub fn alloc() -> AxResult<Self> {
-        let start_paddr = H::alloc_frame()
+        let start_paddr = H::PagingHandler::alloc_frame()
             .ok_or_else(|| ax_err_type!(NoMemory, "allocate physical frame failed"))?;
         assert_ne!(start_paddr.as_usize(), 0);
         Ok(Self {
@@ -44,7 +46,7 @@ impl<H: AxVCpuHal> PhysFrame<H> {
     }
 
     pub fn as_mut_ptr(&self) -> *mut u8 {
-        H::phys_to_virt(self.start_paddr()).as_mut_ptr()
+        H::PagingHandler::phys_to_virt(self.start_paddr()).as_mut_ptr()
     }
 
     pub fn fill(&mut self, byte: u8) {
@@ -55,7 +57,7 @@ impl<H: AxVCpuHal> PhysFrame<H> {
 impl<H: AxVCpuHal> Drop for PhysFrame<H> {
     fn drop(&mut self) {
         if let Some(start_paddr) = self.start_paddr {
-            H::dealloc_frame(start_paddr);
+            H::PagingHandler::dealloc_frame(start_paddr);
             debug!("[AxVM] deallocated PhysFrame({:#x})", start_paddr);
         }
     }

@@ -1,42 +1,46 @@
 use alloc::collections::VecDeque;
-use bit_field::BitField;
+use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
+
+use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::bits64::vmx;
-use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
+use x86::controlregs::Xcr0;
 use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
+use x86_64::VirtAddr;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
+use page_table_entry::x86_64::X64PTE;
+use page_table_multiarch::{PageSize, PagingHandler, PagingResult};
+
+use axaddrspace::EPTTranslator;
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal, AxVcpuAccessGuestState};
 
 use super::VmxExitInfo;
 use super::as_axerr;
 use super::definitions::VmxExitReason;
-use super::structs::{IOBitmap, MsrBitmap, VmxRegion};
+use super::read_vmcs_revision_id;
+use super::structs::{EptpList, IOBitmap, MsrBitmap, VmxRegion};
 use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
-    VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
+    VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, exit_qualification,
+    interrupt_exit_info,
 };
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
+use crate::LinuxContext;
+use crate::page_table::GuestPageTable64;
+use crate::page_table::GuestPageWalkInfo;
+use crate::segmentation::{Segment, SegmentAccessRights};
+use crate::xstate::XState;
+use crate::{msr::Msr, regs::GeneralRegisters};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
-
-pub struct XState {
-    host_xcr0: u64,
-    guest_xcr0: u64,
-    host_xss: u64,
-    guest_xss: u64,
-
-    xsave_available: bool,
-    xsaves_available: bool,
-}
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
@@ -44,97 +48,6 @@ pub enum VmCpuMode {
     Protected,
     Compatibility, // IA-32E mode (CS.L = 0)
     Mode64,        // IA-32E mode (CS.L = 1)
-}
-
-impl XState {
-    /// Create a new [`XState`] instance with current host state
-    fn new() -> Self {
-        // Check if XSAVE is available
-        let xsave_available = Self::xsave_available();
-        // Check if XSAVES and XRSTORS (as well as IA32_XSS) are available
-        let xsaves_available = if xsave_available {
-            Self::xsaves_available()
-        } else {
-            false
-        };
-
-        // Read XCR0 iff XSAVE is available
-        let xcr0 = if xsave_available {
-            unsafe { xcr0_read().bits() }
-        } else {
-            0
-        };
-        // Read IA32_XSS iff XSAVES is available
-        let xss = if xsaves_available {
-            Msr::IA32_XSS.read()
-        } else {
-            0
-        };
-
-        Self {
-            host_xcr0: xcr0,
-            guest_xcr0: xcr0,
-            host_xss: xss,
-            guest_xss: xss,
-            xsave_available,
-            xsaves_available,
-        }
-    }
-
-    /// Enable extended processor state management instructions, including XGETBV and XSAVE.
-    pub fn enable_xsave() {
-        if Self::xsave_available() {
-            unsafe { Cr4::write(Cr4::read() | Cr4Flags::OSXSAVE) };
-        }
-    }
-
-    /// Check if XSAVE is available on the current CPU.
-    pub fn xsave_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_feature_info()
-            .map(|f| f.has_xsave())
-            .unwrap_or(false)
-    }
-
-    /// Check if XSAVES and XRSTORS (as well as IA32_XSS) are available on the current CPU.
-    pub fn xsaves_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_extended_state_info()
-            .map(|f| f.has_xsaves_xrstors())
-            .unwrap_or(false)
-    }
-
-    /// Save the current host XCR0 and IA32_XSS values and load the guest values.
-    pub fn switch_to_guest(&mut self) {
-        unsafe {
-            if self.xsave_available {
-                self.host_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.guest_xcr0));
-
-                if self.xsaves_available {
-                    self.host_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.guest_xss);
-                }
-            }
-        }
-    }
-
-    /// Save the current guest XCR0 and IA32_XSS values and load the host values.
-    pub fn switch_to_host(&mut self) {
-        unsafe {
-            if self.xsave_available {
-                self.guest_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.host_xcr0));
-
-                if self.xsaves_available {
-                    self.guest_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.host_xss);
-                }
-            }
-        }
-    }
 }
 
 const MSR_IA32_EFER_LMA_BIT: u64 = 1 << 10;
@@ -151,38 +64,36 @@ pub struct VmxVcpu<H: AxVCpuHal> {
     vmcs: VmxRegion<H>,
     io_bitmap: IOBitmap<H>,
     msr_bitmap: MsrBitmap<H>,
+    eptp_list: EptpList<H>,
+
     pending_events: VecDeque<(u8, Option<u32>)>,
+    // xstate: XState,
     xstate: XState,
     entry: Option<GuestPhysAddr>,
     ept_root: Option<HostPhysAddr>,
-    // is_host: bool, temporary removed because we don't care about type 1.5 now
+
+    id: usize,
 }
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
     /// Create a new [`VmxVcpu`].
-    pub fn new() -> AxResult<Self> {
-        let vmcs_revision_id = super::read_vmcs_revision_id();
+    pub fn new(id: usize) -> AxResult<Self> {
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
             launched: false,
-            vmcs: VmxRegion::new(vmcs_revision_id, false)?,
+            vmcs: VmxRegion::new(read_vmcs_revision_id(), false)?,
             io_bitmap: IOBitmap::passthrough_all()?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
+            eptp_list: EptpList::new()?,
             pending_events: VecDeque::with_capacity(8),
             xstate: XState::new(),
             entry: None,
             ept_root: None,
-            // is_host: false,
+            id,
         };
-        info!("[HV] created VmxVcpu(vmcs: {:#x})", vcpu.vmcs.phys_addr());
+        debug!("[HV] created VmxVcpu(vmcs: {:#x})", vcpu.vmcs.phys_addr(),);
         Ok(vcpu)
-    }
-
-    /// Set the new [`VmxVcpu`] context from guest OS.
-    pub fn setup(&mut self, ept_root: HostPhysAddr, entry: GuestPhysAddr) -> AxResult {
-        self.setup_vmcs(entry, ept_root)?;
-        Ok(())
     }
 
     // /// Get the identifier of this [`VmxVcpu`].
@@ -192,7 +103,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
     /// Bind this [`VmxVcpu`] to current logical processor.
     pub fn bind_to_current_processor(&self) -> AxResult {
-        debug!(
+        trace!(
             "VmxVcpu bind to current processor vmcs @ {:#x}",
             self.vmcs.phys_addr()
         );
@@ -205,7 +116,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
     /// Unbind this [`VmxVcpu`] from current logical processor.
     pub fn unbind_from_current_processor(&self) -> AxResult {
-        debug!(
+        trace!(
             "VmxVcpu unbind from current processor vmcs @ {:#x}",
             self.vmcs.phys_addr()
         );
@@ -260,7 +171,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         // Handle vm-exits
         let exit_info = self.exit_info().unwrap();
-        // debug!("VM exit: {:#x?}", exit_info);
+        trace!("VM exit: {:#x?}", exit_info);
 
         match self.builtin_vmexit_handler(&exit_info) {
             Some(result) => {
@@ -324,24 +235,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsGuestNW::RSP.write(rsp).unwrap()
     }
 
-    /// Translate guest virtual addr to linear addr    
-    pub fn gla2gva(&self, guest_rip: GuestVirtAddr) -> GuestVirtAddr {
-        let cpu_mode = self.get_cpu_mode();
-        let seg_base = if cpu_mode == VmCpuMode::Mode64 {
-            0
-        } else {
-            VmcsGuestNW::CS_BASE.read().unwrap()
-        };
-        // debug!(
-        //     "seg_base: {:#x}, guest_rip: {:#x} cpu mode:{:?}",
-        //     seg_base, guest_rip, cpu_mode
-        // );
-        guest_rip + seg_base
-    }
-
     /// Get Translate guest page table info
-    pub fn get_ptw_info(&self) -> GuestPageWalkInfo {
-        let top_entry = VmcsGuestNW::CR3.read().unwrap();
+    pub fn get_pagetable_walk_info(&self) -> GuestPageWalkInfo {
+        let cr3 = VmcsGuestNW::CR3.read().unwrap();
         let level = self.get_paging_level();
         let is_write_access = false;
         let is_inst_fetch = false;
@@ -368,7 +264,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             width = 0;
         }
         GuestPageWalkInfo {
-            top_entry,
+            cr3,
             level,
             width,
             is_user_mode_access,
@@ -429,6 +325,60 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     pub fn set_msr_intercept_of_range(&mut self, msr: u32, intercept: bool) {
         self.msr_bitmap.set_read_intercept(msr, intercept);
         self.msr_bitmap.set_write_intercept(msr, intercept);
+    }
+
+    pub fn read_guest_memory(&self, gva: GuestVirtAddr, len: usize) -> AxResult<Vec<u8>> {
+        debug!("read_guest_memory @{:?} len: {}", gva, len);
+
+        let mut content = Vec::with_capacity(len as usize);
+
+        let mut remained_size = len;
+        let mut addr = gva;
+
+        while remained_size > 0 {
+            let (gpa, _flags, page_size) = self.guest_page_table_query(gva).map_err(|e| {
+                warn!(
+                    "Failed to query guest page table, GVA {:?} err {:?}",
+                    gva, e
+                );
+                ax_err_type!(BadAddress)
+            })?;
+            let pgoff = page_size.align_offset(addr.into());
+            let read_size = (page_size as usize - pgoff).min(remained_size);
+            addr += read_size;
+            remained_size -= read_size;
+
+            if let Some((hpa, _flags, _pgsize)) = H::EPTTranslator::guest_phys_to_host_phys(gpa) {
+                let hva_ptr = H::PagingHandler::phys_to_virt(hpa).as_ptr();
+                for i in 0..read_size {
+                    content.push(unsafe { hva_ptr.add(i).read() });
+                }
+            } else {
+                return ax_err!(BadAddress);
+            }
+        }
+        debug!("read_guest_memory @{:?} content: {:x?}", gva, content);
+        Ok(content)
+    }
+
+    pub fn decode_instruction(&self, rip: GuestVirtAddr, instr_len: usize) -> AxResult {
+        use alloc::string::String;
+        use iced_x86::{Decoder, DecoderOptions, Formatter, IntelFormatter};
+
+        let bytes = self.read_guest_memory(rip, instr_len)?;
+        let mut decoder = Decoder::with_ip(
+            64,
+            bytes.as_slice(),
+            rip.as_usize() as _,
+            DecoderOptions::NONE,
+        );
+        let instr = decoder.decode();
+        let mut output = String::new();
+        let mut formattor = IntelFormatter::new();
+        formattor.format(&instr, &mut output);
+
+        debug!("Decoded instruction @Intel formatter: {}", output);
+        Ok(())
     }
 }
 
@@ -500,14 +450,31 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         Ok(())
     }
 
-    fn setup_vmcs(&mut self, entry: GuestPhysAddr, ept_root: HostPhysAddr) -> AxResult {
+    fn setup_vmcs(
+        &mut self,
+        ept_root: HostPhysAddr,
+        entry: Option<GuestPhysAddr>,
+        ctx: Option<LinuxContext>,
+    ) -> AxResult {
+        let mut is_guest = true;
+
         let paddr = self.vmcs.phys_addr().as_usize() as u64;
         unsafe {
             vmx::vmclear(paddr).map_err(as_axerr)?;
         }
         self.bind_to_current_processor()?;
-        self.setup_vmcs_guest(entry)?;
-        self.setup_vmcs_control(ept_root, true)?;
+
+        if let Some(ctx) = ctx {
+            is_guest = false;
+            self.setup_vmcs_guest_from_ctx(ctx)?;
+        } else {
+            self.setup_vmcs_guest(entry.ok_or_else(|| {
+                error!("VmxVcpu::setup_vmcs: entry is None");
+                ax_err_type!(InvalidInput)
+            })?)?;
+        }
+
+        self.setup_vmcs_control(ept_root, is_guest)?;
         self.unbind_from_current_processor()?;
         Ok(())
     }
@@ -545,6 +512,66 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsHostNW::IA32_SYSENTER_ESP.write(0)?;
         VmcsHostNW::IA32_SYSENTER_EIP.write(0)?;
         VmcsHost32::IA32_SYSENTER_CS.write(0)?;
+
+        Ok(())
+    }
+
+    /// Indeed, this function can be combined with `setup_vmcs_guest`,
+    /// to avoid complexity and minimize the modification,
+    /// we just keep them separated.
+    fn setup_vmcs_guest_from_ctx(&mut self, host_ctx: LinuxContext) -> AxResult {
+        let linux = host_ctx;
+
+        self.set_cr(0, linux.cr0.bits());
+        self.set_cr(4, linux.cr4.bits());
+        self.set_cr(3, linux.cr3);
+
+        macro_rules! set_guest_segment {
+            ($seg: expr, $reg: ident) => {{
+                use VmcsGuest16::*;
+                use VmcsGuest32::*;
+                use VmcsGuestNW::*;
+                concat_idents!($reg, _SELECTOR).write($seg.selector.bits())?;
+                concat_idents!($reg, _BASE).write($seg.base as _)?;
+                concat_idents!($reg, _LIMIT).write($seg.limit)?;
+                concat_idents!($reg, _ACCESS_RIGHTS).write($seg.access_rights.bits())?;
+            }};
+        }
+
+        set_guest_segment!(linux.es, ES);
+        set_guest_segment!(linux.cs, CS);
+        set_guest_segment!(linux.ss, SS);
+        set_guest_segment!(linux.ds, DS);
+        set_guest_segment!(linux.fs, FS);
+        set_guest_segment!(linux.gs, GS);
+        set_guest_segment!(linux.tss, TR);
+        set_guest_segment!(Segment::invalid(), LDTR);
+
+        VmcsGuestNW::GDTR_BASE.write(linux.gdt.base.as_u64() as _)?;
+        VmcsGuest32::GDTR_LIMIT.write(linux.gdt.limit as _)?;
+        VmcsGuestNW::IDTR_BASE.write(linux.idt.base.as_u64() as _)?;
+        VmcsGuest32::IDTR_LIMIT.write(linux.idt.limit as _)?;
+
+        VmcsGuestNW::RSP.write(linux.rsp as _)?;
+        VmcsGuestNW::RIP.write(linux.rip as _)?;
+        VmcsGuestNW::RFLAGS.write(0x2)?;
+
+        VmcsGuest32::IA32_SYSENTER_CS.write(linux.ia32_sysenter_cs as _)?;
+        VmcsGuestNW::IA32_SYSENTER_ESP.write(linux.ia32_sysenter_esp as _)?;
+        VmcsGuestNW::IA32_SYSENTER_EIP.write(linux.ia32_sysenter_eip as _)?;
+
+        VmcsGuestNW::DR7.write(0x400)?;
+        VmcsGuest64::IA32_DEBUGCTL.write(0)?;
+
+        VmcsGuest32::ACTIVITY_STATE.write(0)?;
+        VmcsGuest32::INTERRUPTIBILITY_STATE.write(0)?;
+        VmcsGuestNW::PENDING_DBG_EXCEPTIONS.write(0)?;
+
+        VmcsGuest64::LINK_PTR.write(u64::MAX)?;
+        VmcsGuest32::VMX_PREEMPTION_TIMER_VALUE.write(0)?;
+
+        VmcsGuest64::IA32_PAT.write(linux.pat)?;
+        VmcsGuest64::IA32_EFER.write(linux.efer.bits())?;
 
         Ok(())
     }
@@ -615,7 +642,12 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             Msr::IA32_VMX_PINBASED_CTLS.read() as u32,
             // (PinCtrl::NMI_EXITING | PinCtrl::EXTERNAL_INTERRUPT_EXITING).bits(),
             // (PinCtrl::NMI_EXITING | PinCtrl::VMX_PREEMPTION_TIMER).bits(),
-            PinCtrl::NMI_EXITING.bits(),
+            // PinCtrl::NMI_EXITING.bits(),
+            if is_guest {
+                PinCtrl::NMI_EXITING.bits()
+            } else {
+                0 // Do not intercept NMI in for host VM now.
+            },
             0,
         )?;
 
@@ -637,22 +669,30 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
-        let mut val = CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
+        let mut val =
+            CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST | CpuCtrl2::ENABLE_VM_FUNCTIONS;
+
         if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers() {
             if features.has_rdtscp() {
                 val |= CpuCtrl2::ENABLE_RDTSCP;
             }
         }
+
         if let Some(features) = raw_cpuid.get_extended_feature_info() {
             if features.has_invpcid() {
                 val |= CpuCtrl2::ENABLE_INVPCID;
             }
+            if features.has_waitpkg() {
+                val |= CpuCtrl2::ENABLE_USER_WAIT_PAUSE;
+            }
         }
+
         if let Some(features) = raw_cpuid.get_extended_state_info() {
             if features.has_xsaves_xrstors() {
                 val |= CpuCtrl2::ENABLE_XSAVES_XRSTORS;
             }
         }
+
         vmcs::set_control(
             VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_PROCBASED_CTLS2,
@@ -703,8 +743,14 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsControl32::VMEXIT_MSR_LOAD_COUNT.write(0)?;
         VmcsControl32::VMENTRY_MSR_LOAD_COUNT.write(0)?;
 
-        // VmcsControlNW::CR4_GUEST_HOST_MASK.write(0)?;
         VmcsControl32::CR3_TARGET_COUNT.write(0)?;
+
+        // 25.6.14 VM-Function Controls
+        // Table 25-10. Definitions of VM-Function Controls
+        // Bit 0: EPTP switching
+        VmcsControl64::VM_FUNCTION_CONTROLS.write(0b1)?;
+
+        VmcsControl64::EPTP_LIST_ADDR.write(self.eptp_list.phys_addr().as_usize() as _)?;
 
         // Pass-through exceptions (except #UD(6)), don't use I/O bitmap, set MSR bitmaps.
         let exception_bitmap: u32 = 1 << 6;
@@ -715,6 +761,44 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsControl64::IO_BITMAP_A_ADDR.write(self.io_bitmap.phys_addr().0.as_usize() as _)?;
         VmcsControl64::IO_BITMAP_B_ADDR.write(self.io_bitmap.phys_addr().1.as_usize() as _)?;
         VmcsControl64::MSR_BITMAPS_ADDR.write(self.msr_bitmap.phys_addr().as_usize() as _)?;
+        Ok(())
+    }
+
+    fn load_vmcs_guest(&self, linux: &mut LinuxContext) -> AxResult {
+        linux.rip = VmcsGuestNW::RIP.read()? as _;
+        linux.rsp = VmcsGuestNW::RSP.read()? as _;
+        linux.cr0 = Cr0Flags::from_bits_truncate(VmcsGuestNW::CR0.read()? as _);
+        linux.cr3 = VmcsGuestNW::CR3.read()? as _;
+        linux.cr4 = Cr4Flags::from_bits_truncate(VmcsGuestNW::CR4.read()? as _);
+
+        linux.es.selector = SegmentSelector::from_raw(VmcsGuest16::ES_SELECTOR.read()?);
+
+        linux.cs.selector = SegmentSelector::from_raw(VmcsGuest16::CS_SELECTOR.read()?);
+        // CS:
+        // If the Type is 9 or 11 (non-conforming code segment), the DPL must equal the DPL in the access-rights field for SS.
+        linux.cs.access_rights =
+            SegmentAccessRights::from_bits_truncate(VmcsGuest32::CS_ACCESS_RIGHTS.read()?);
+        linux.ss.selector = SegmentSelector::from_raw(VmcsGuest16::SS_SELECTOR.read()?);
+        linux.ss.access_rights =
+            SegmentAccessRights::from_bits_truncate(VmcsGuest32::SS_ACCESS_RIGHTS.read()?);
+
+        linux.ds.selector = SegmentSelector::from_raw(VmcsGuest16::DS_SELECTOR.read()?);
+        linux.fs.selector = SegmentSelector::from_raw(VmcsGuest16::FS_SELECTOR.read()?);
+        linux.fs.base = VmcsGuestNW::FS_BASE.read()? as _;
+        linux.gs.selector = SegmentSelector::from_raw(VmcsGuest16::GS_SELECTOR.read()?);
+        linux.gs.base = VmcsGuestNW::GS_BASE.read()? as _;
+        linux.tss.selector = SegmentSelector::from_raw(VmcsGuest16::TR_SELECTOR.read()?);
+
+        linux.gdt.base = VirtAddr::new(VmcsGuestNW::GDTR_BASE.read()? as _);
+        linux.gdt.limit = VmcsGuest32::GDTR_LIMIT.read()? as _;
+        linux.idt.base = VirtAddr::new(VmcsGuestNW::IDTR_BASE.read()? as _);
+        linux.idt.limit = VmcsGuest32::IDTR_LIMIT.read()? as _;
+
+        linux.ia32_sysenter_cs = VmcsGuest32::IA32_SYSENTER_CS.read()? as _; // 0x174
+        linux.ia32_sysenter_esp = VmcsGuestNW::IA32_SYSENTER_ESP.read()? as _; // 0x178
+        linux.ia32_sysenter_eip = VmcsGuestNW::IA32_SYSENTER_EIP.read()? as _; // 0x17a
+
+        linux.load_guest_regs(self.regs());
         Ok(())
     }
 
@@ -737,6 +821,32 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             }
         }
         level as usize
+    }
+
+    /// Translate guest virtual addr to linear addr
+    fn gva_to_linear_addr(&self, vaddr: GuestVirtAddr) -> GuestVirtAddr {
+        let cpu_mode = self.get_cpu_mode();
+        let seg_base = if cpu_mode == VmCpuMode::Mode64 {
+            0
+        } else {
+            VmcsGuestNW::CS_BASE.read().unwrap()
+        };
+        vaddr + seg_base
+    }
+
+    pub fn guest_page_table_query(
+        &self,
+        gva: GuestVirtAddr,
+    ) -> PagingResult<(GuestPhysAddr, MappingFlags, PageSize)> {
+        let addr = self.gva_to_linear_addr(gva);
+
+        // debug!("guest_page_table_query: gva {:?} linear {:?}", gva, addr);
+
+        let guest_ptw_info = self.get_pagetable_walk_info();
+        let guest_page_table: GuestPageTable64<X64PTE, H::PagingHandler, H::EPTTranslator> =
+            GuestPageTable64::construct(&guest_ptw_info);
+
+        guest_page_table.query(addr)
     }
 }
 
@@ -901,6 +1011,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             VmxExitReason::XSETBV => Some(self.handle_xsetbv()),
             VmxExitReason::CR_ACCESS => Some(self.handle_cr()),
             VmxExitReason::CPUID => Some(self.handle_cpuid()),
+            VmxExitReason::EXCEPTION_NMI => Some(self.handle_exception_nmi(exit_info)),
             _ => None,
         }
     }
@@ -912,6 +1023,30 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         The value of X is in the range 0–31 and can be determined by consulting the VMX capability MSR IA32_VMX_MISC (see Appendix A.6).
          */
         VmcsGuest32::VMX_PREEMPTION_TIMER_VALUE.write(VMX_PREEMPTION_TIMER_SET_VALUE)?;
+        Ok(())
+    }
+
+    fn handle_exception_nmi(&mut self, exit_info: &VmxExitInfo) -> AxResult {
+        let intr_info = interrupt_exit_info()?;
+        info!(
+            "VM exit: Exception or NMI @ RIP({:#x}, {}): {:#x?}",
+            exit_info.guest_rip, exit_info.exit_instruction_length, intr_info
+        );
+
+        self.decode_instruction(
+            GuestVirtAddr::from_usize(exit_info.guest_rip),
+            exit_info.exit_instruction_length as _,
+        )?;
+
+        const NON_MASKABLE_INTERRUPT: u8 = 2;
+
+        match intr_info.vector {
+            // ExceptionType::NonMaskableInterrupt
+            NON_MASKABLE_INTERRUPT => unsafe {
+                core::arch::asm!("int {}", const NON_MASKABLE_INTERRUPT)
+            },
+            v => panic!("Unhandled Guest Exception: #{:#x}", v),
+        }
         Ok(())
     }
 
@@ -994,7 +1129,6 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 self.load_guest_xstate();
                 let res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 self.load_host_xstate();
-
                 res
             }
             LEAF_HYPERVISOR_INFO => CpuIdResult {
@@ -1012,7 +1146,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             EAX_FREQUENCY_INFO => {
                 /// Timer interrupt frequencyin Hz.
                 /// Todo: this should be the same as `axconfig::TIMER_FREQUENCY` defined in ArceOS's config file.
-                const TIMER_FREQUENCY_MHZ: u32 = 3_000;
+                const TIMER_FREQUENCY_MHZ: u32 = 4_000;
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
                     warn!(
@@ -1088,12 +1222,21 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         }
     }
 
+    /// Save the current host state to the vcpu,
+    /// restore the guest state from the vcpu into registers.
+    ///
+    /// This function is generally called before VM-entry.
     fn load_guest_xstate(&mut self) {
-        self.xstate.switch_to_guest();
+        // FIXME: Linux will throw a UD exception if we save/restore xstate.
+        // self.xstate.switch_to_guest();
     }
 
+    /// Save the current guest state to the vcpu,
+    /// restore the host state from the vcpu into registers.
+    ///
+    /// This function is generally called after VM-exit.
     fn load_host_xstate(&mut self) {
-        self.xstate.switch_to_host();
+        // self.xstate.switch_to_host();
     }
 }
 
@@ -1123,18 +1266,80 @@ fn get_tr_base(tr: SegmentSelector, gdt: &DescriptorTablePointer<u64>) -> u64 {
 impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
     fn fmt(&self, f: &mut Formatter) -> Result {
         (|| -> AxResult<Result> {
+            let cr0_raw = VmcsGuestNW::CR0.read()? as u64;
+            let cr0 = Cr0Flags::from_bits_truncate(cr0_raw);
+
+            let cr4_raw = VmcsGuestNW::CR4.read()? as u64;
+            let cr4 = Cr4Flags::from_bits_truncate(cr4_raw);
+
+            let efer_raw = VmcsGuest64::IA32_EFER.read()?;
+            let efer = EferFlags::from_bits_truncate(efer_raw);
+
+            let cs_selector = SegmentSelector::from_raw(VmcsGuest16::CS_SELECTOR.read()?);
+            let cs_access_rights_raw = VmcsGuest32::CS_ACCESS_RIGHTS.read()?;
+            let cs_access_rights = SegmentAccessRights::from_bits_truncate(cs_access_rights_raw);
+            let ss_selector = SegmentSelector::from_raw(VmcsGuest16::SS_SELECTOR.read()?);
+            let ss_access_rights_raw = VmcsGuest32::SS_ACCESS_RIGHTS.read()?;
+            let ss_access_rights = SegmentAccessRights::from_bits_truncate(ss_access_rights_raw);
+            let ds_selector = SegmentSelector::from_raw(VmcsGuest16::DS_SELECTOR.read()?);
+            let ds_access_rights =
+                SegmentAccessRights::from_bits_truncate(VmcsGuest32::DS_ACCESS_RIGHTS.read()?);
+            let fs_selector = SegmentSelector::from_raw(VmcsGuest16::FS_SELECTOR.read()?);
+            let fs_access_rights =
+                SegmentAccessRights::from_bits_truncate(VmcsGuest32::FS_ACCESS_RIGHTS.read()?);
+            let gs_selector = SegmentSelector::from_raw(VmcsGuest16::GS_SELECTOR.read()?);
+            let gs_access_rights =
+                SegmentAccessRights::from_bits_truncate(VmcsGuest32::GS_ACCESS_RIGHTS.read()?);
+            let tr_selector = SegmentSelector::from_raw(VmcsGuest16::TR_SELECTOR.read()?);
+            let tr_access_rights =
+                SegmentAccessRights::from_bits_truncate(VmcsGuest32::TR_ACCESS_RIGHTS.read()?);
+            let gdt_base = VirtAddr::new(VmcsGuestNW::GDTR_BASE.read()? as _);
+            let gdt_limit = VmcsGuest32::GDTR_LIMIT.read()?;
+            let idt_base = VirtAddr::new(VmcsGuestNW::IDTR_BASE.read()? as _);
+            let idt_limit = VmcsGuest32::IDTR_LIMIT.read()?;
+
+            let ia32_sysenter_cs = VmcsGuest32::IA32_SYSENTER_CS.read()?;
+            let ia32_sysenter_esp = VmcsGuestNW::IA32_SYSENTER_ESP.read()?;
+            let ia32_sysenter_eip = VmcsGuestNW::IA32_SYSENTER_EIP.read()?;
+
             Ok(f.debug_struct("VmxVcpu")
                 .field("guest_regs", &self.guest_regs)
                 .field("rip", &VmcsGuestNW::RIP.read()?)
                 .field("rsp", &VmcsGuestNW::RSP.read()?)
                 .field("rflags", &VmcsGuestNW::RFLAGS.read()?)
-                .field("cr0", &VmcsGuestNW::CR0.read()?)
+                .field("cr0_raw", &cr0_raw)
+                .field("cr0", &cr0)
                 .field("cr3", &VmcsGuestNW::CR3.read()?)
-                .field("cr4", &VmcsGuestNW::CR4.read()?)
-                .field("cs", &VmcsGuest16::CS_SELECTOR.read()?)
+                .field("cr4_raw", &cr4_raw)
+                .field("cr4", &cr4)
+                .field("cs_base", &VmcsGuestNW::CS_BASE.read()?)
+                .field("cs_selector", &cs_selector)
+                .field("cs_access_rights", &cs_access_rights)
+                .field("cs_access_rights_raw", &cs_access_rights_raw)
+                .field("ss_base", &VmcsGuestNW::SS_BASE.read()?)
+                .field("ss_selector", &ss_selector)
+                .field("ss_access_rights_raw", &ss_access_rights_raw)
+                .field("ss_access_rights", &ss_access_rights)
+                .field("ds_base", &VmcsGuestNW::DS_BASE.read()?)
+                .field("ds_selector", &ds_selector)
+                .field("ds_access_rights", &ds_access_rights)
                 .field("fs_base", &VmcsGuestNW::FS_BASE.read()?)
+                .field("fs_selector", &fs_selector)
+                .field("fs_access_rights", &fs_access_rights)
                 .field("gs_base", &VmcsGuestNW::GS_BASE.read()?)
-                .field("tss", &VmcsGuest16::TR_SELECTOR.read()?)
+                .field("gs_selector", &gs_selector)
+                .field("gs_access_rights", &gs_access_rights)
+                .field("tr_selector", &tr_selector)
+                .field("tr_access_rights", &tr_access_rights)
+                .field("gdt_base", &gdt_base)
+                .field("gdt_limit", &gdt_limit)
+                .field("idt_base", &idt_base)
+                .field("idt_limit", &idt_limit)
+                .field("efer_raw", &efer_raw)
+                .field("efer", &efer)
+                .field("ia32_sysenter_cs", &ia32_sysenter_cs)
+                .field("ia32_sysenter_esp", &ia32_sysenter_esp)
+                .field("ia32_sysenter_eip", &ia32_sysenter_eip)
                 .finish())
         })()
         .unwrap()
@@ -1142,12 +1347,21 @@ impl<H: AxVCpuHal> Debug for VmxVcpu<H> {
 }
 
 impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
-    type CreateConfig = ();
+    type CreateConfig = usize;
 
     type SetupConfig = ();
 
-    fn new(_config: Self::CreateConfig) -> AxResult<Self> {
-        Self::new()
+    type HostContext = crate::context::LinuxContext;
+
+    fn new(id: Self::CreateConfig) -> AxResult<Self> {
+        Self::new(id)
+    }
+
+    fn load_context(&self, config: &mut Self::HostContext) -> AxResult {
+        // info!("Loading context {:#x?}", self);
+
+        self.load_vmcs_guest(config)?;
+        Ok(())
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
@@ -1161,12 +1375,32 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     }
 
     fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
-        self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap())
+        self.setup_vmcs(self.ept_root.unwrap(), self.entry, None)
+    }
+
+    fn setup_from_context(&mut self, ctx: Self::HostContext) -> AxResult {
+        self.guest_regs.load_from_context(&ctx);
+        self.setup_vmcs(self.ept_root.unwrap(), None, Some(ctx))
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
         match self.inner_run() {
             Some(exit_info) => Ok(if exit_info.entry_failure {
+                match exit_info.exit_reason {
+                    VmxExitReason::INVALID_GUEST_STATE
+                    | VmxExitReason::MCE_DURING_VMENTRY
+                    | VmxExitReason::MSR_LOAD_FAIL => {}
+                    _ => {
+                        error!("Invalid exit reasion when entry failure: {:#x?}", exit_info);
+                    }
+                };
+
+                let exit_qualification = exit_qualification()?;
+
+                warn!("VMX entry failure: {:#x?}", exit_info);
+                warn!("Exit qualification: {:#x?}", exit_qualification);
+                warn!("VCpu {:#x?}", self);
+
                 AxVCpuExitReason::FailEntry {
                     // Todo: get `hardware_entry_failure_reason` somehow.
                     hardware_entry_failure_reason: 0,
@@ -1229,6 +1463,33 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                             }
                         }
                     }
+                    VmxExitReason::EPT_VIOLATION => {
+                        let ept_info = self.nested_page_fault_info()?;
+                        self.decode_instruction(
+                            GuestVirtAddr::from_usize(exit_info.guest_rip),
+                            exit_info.exit_instruction_length as _,
+                        )?;
+
+                        AxVCpuExitReason::NestedPageFault {
+                            addr: ept_info.fault_guest_paddr,
+                            access_flags: ept_info.access_flags,
+                        }
+                    }
+                    VmxExitReason::TRIPLE_FAULT => {
+                        error!("VMX triple fault: {:#x?}", exit_info);
+                        error!("VCpu {:#x?}", self);
+
+                        self.decode_instruction(
+                            GuestVirtAddr::from_usize(exit_info.guest_rip),
+                            exit_info.exit_instruction_length as _,
+                        )?;
+
+                        AxVCpuExitReason::Halt
+                    }
+                    VmxExitReason::INIT => {
+                        warn!("VMX INIT: {:#x?}, just bring down current VM", exit_info);
+                        AxVCpuExitReason::SystemDown
+                    }
                     _ => {
                         warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
                         warn!("VCpu {:#x?}", self);
@@ -1251,5 +1512,87 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
         self.regs_mut().set_reg_of_index(reg as u8, val as u64);
+    }
+}
+
+impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
+    type GeneralRegisters = GeneralRegisters;
+
+    fn regs(&self) -> &Self::GeneralRegisters {
+        self.regs()
+    }
+
+    fn regs_mut(&mut self) -> &mut Self::GeneralRegisters {
+        self.regs_mut()
+    }
+
+    fn read_gpr(&self, reg: usize) -> usize {
+        self.regs().get_reg_of_index(reg as u8) as usize
+    }
+
+    fn write_gpr(&mut self, reg: usize, val: usize) {
+        self.regs_mut().set_reg_of_index(reg as u8, val as u64);
+    }
+
+    fn instr_pointer(&self) -> usize {
+        VmcsGuestNW::RIP.read().expect("Failed to read RIP") as usize
+    }
+
+    fn set_instr_pointer(&mut self, val: usize) {
+        VmcsGuestNW::RIP.write(val as _).expect("Failed to set RIP");
+    }
+
+    fn stack_pointer(&self) -> usize {
+        self.stack_pointer()
+    }
+
+    fn set_stack_pointer(&mut self, val: usize) {
+        self.set_stack_pointer(val);
+    }
+
+    fn frame_pointer(&self) -> usize {
+        self.regs().rbp as usize
+    }
+
+    fn set_frame_pointer(&mut self, val: usize) {
+        self.regs_mut().rbp = val as u64;
+    }
+
+    fn return_value(&self) -> usize {
+        self.regs().rax as usize
+    }
+
+    fn set_return_value(&mut self, val: usize) {
+        self.regs_mut().rax = val as u64;
+    }
+
+    fn guest_is_privileged(&self) -> bool {
+        use crate::segmentation::SegmentAccessRights;
+        SegmentAccessRights::from_bits_truncate(
+            VmcsGuest32::CS_ACCESS_RIGHTS
+                .read()
+                .expect("Failed to read CS_ACCESS_RIGHTS"),
+        )
+        .dpl()
+            == 0
+    }
+
+    fn guest_page_table_query(
+        &self,
+        gva: GuestVirtAddr,
+    ) -> Option<(GuestPhysAddr, MappingFlags, PageSize)> {
+        self.guest_page_table_query(gva).ok()
+    }
+
+    fn current_ept_root(&self) -> HostPhysAddr {
+        vmcs::get_ept_pointer()
+    }
+
+    fn eptp_list_region(&self) -> HostPhysAddr {
+        self.eptp_list.phys_addr()
+    }
+
+    fn dump(&self) {
+        warn!("Dumping VmxVcpu {:#x?}", self);
     }
 }

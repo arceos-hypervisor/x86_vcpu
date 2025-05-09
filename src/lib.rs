@@ -14,6 +14,12 @@ pub(crate) mod msr;
 pub(crate) mod regs;
 mod ept;
 mod frame;
+mod page_table;
+
+mod context;
+mod segmentation;
+// mod tables;
+mod xstate;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "vmx")] {
@@ -26,6 +32,6 @@ cfg_if::cfg_if! {
     }
 }
 
-pub use ept::GuestPageWalkInfo;
+pub use context::LinuxContext;
 pub use regs::GeneralRegisters;
 pub use vender::has_hardware_support;

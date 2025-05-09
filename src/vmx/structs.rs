@@ -256,6 +256,8 @@ bitflags! {
         const WALK_LENGTH_3 = 2 << 3;
         /// EPT page-walk length 4.
         const WALK_LENGTH_4 = 3 << 3;
+        /// EPT page-walk length 5
+        const WALK_LENGTH_5 = 4 << 3;
         /// Setting this control to 1 enables accessed and dirty flags for EPT.
         const ENABLE_ACCESSED_DIRTY = 1 << 6;
     }
@@ -266,5 +268,24 @@ impl EPTPointer {
         let aligned_addr = pml4_paddr.as_usize() & !(PAGE_SIZE - 1);
         let flags = Self::from_bits_retain(aligned_addr as u64);
         flags | Self::MEM_TYPE_WB | Self::WALK_LENGTH_4 | Self::ENABLE_ACCESSED_DIRTY
+    }
+}
+
+/// EPTP list, the 4-KByte structure,
+/// The EPTP list comprises 512 8-Byte entries (each an EPTP value)
+/// and is used by the EPTP-switching VM function (see Section 26.5.6.3).
+pub(super) struct EptpList<H: AxVCpuHal> {
+    frame: PhysFrame<H>,
+}
+
+impl<H: AxVCpuHal> EptpList<H> {
+    pub fn new() -> AxResult<Self> {
+        Ok(Self {
+            frame: PhysFrame::alloc_zero()?,
+        })
+    }
+
+    pub fn phys_addr(&self) -> HostPhysAddr {
+        self.frame.start_paddr()
     }
 }
