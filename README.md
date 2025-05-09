@@ -27,4 +27,3 @@ impl axvm::PhysFrameIf for PhysFrameIfImpl {
         // Your implementation here
     }
 }
-```

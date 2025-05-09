@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 log = "0.4.19"
 cfg-if = "1.0"
+bilge = "0.2.0"
 bitflags = "2.2"
 bit_field = "0.10"
 x86 = "0.52"
@@ -22,6 +23,6 @@ axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace.git" }
 axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
 
 [features]
-default = ["vmx"]
+default = ["vmx", "svm"]
 vmx = []
-amd = []
+svm = []
