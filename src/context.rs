@@ -170,7 +170,9 @@ impl LinuxContext {
             rbp: 0,
             es: Segment::invalid(),
             cs: Segment {
-                selector: SegmentSelector::new(1, Ring::Ring0),
+                // I think that this index should be the same as
+                // the one used in `tmp_gdb` in `shim/src/platform/axvisor_x86_64/multiboot.S`.
+                selector: SegmentSelector::new(2, Ring::Ring0),
                 base: 0,
                 limit: 0xffff,
                 access_rights: SegmentAccessRights::ACCESSED
@@ -182,7 +184,7 @@ impl LinuxContext {
                     | SegmentAccessRights::GRANULARITY,
             },
             ss: Segment {
-                selector: SegmentSelector::new(2, Ring::Ring0),
+                selector: SegmentSelector::new(0, Ring::Ring0),
                 base: 0,
                 limit: 0xffff,
                 access_rights: SegmentAccessRights::ACCESSED
@@ -196,7 +198,7 @@ impl LinuxContext {
             fs: Segment::invalid(),
             gs: Segment::invalid(),
             tss: Segment {
-                selector: SegmentSelector::new(2, Ring::Ring0),
+                selector: SegmentSelector::new(0, Ring::Ring0),
                 base: 0,
                 limit: 0,
                 access_rights: SegmentAccessRights::ACCESSED
