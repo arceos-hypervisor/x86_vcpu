@@ -6,6 +6,7 @@
 use bit_field::BitField;
 use x86::bits64::vmx;
 
+use axaddrspace::npt::EPTPointer;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err};
 use page_table_entry::MappingFlags;
@@ -632,14 +633,14 @@ pub fn set_control(
 
 pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> AxResult {
     use super::instructions::{InvEptType, invept};
-    let eptp = super::structs::EPTPointer::from_table_phys(pml4_paddr).bits();
+    let eptp = EPTPointer::from_table_phys(pml4_paddr).bits();
     VmcsControl64::EPTP.write(eptp)?;
     unsafe { invept(InvEptType::SingleContext, eptp).map_err(as_axerr)? };
     Ok(())
 }
 
-pub fn get_ept_pointer() -> HostPhysAddr {
-    HostPhysAddr::from(VmcsControl64::EPTP.read().expect("Failed to read EPTP") as usize)
+pub fn get_ept_pointer() -> EPTPointer {
+    EPTPointer::from_bits_retain(VmcsControl64::EPTP.read().expect("Failed to read EPTP"))
 }
 
 pub fn instruction_error() -> VmxInstructionError {

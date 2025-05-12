@@ -16,6 +16,7 @@ use page_table_entry::x86_64::X64PTE;
 use page_table_multiarch::{PageSize, PagingHandler, PagingResult};
 
 use axaddrspace::EPTTranslator;
+use axaddrspace::npt::EPTPointer;
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal, AxVcpuAccessGuestState};
@@ -1465,10 +1466,10 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                     }
                     VmxExitReason::EPT_VIOLATION => {
                         let ept_info = self.nested_page_fault_info()?;
-                        self.decode_instruction(
-                            GuestVirtAddr::from_usize(exit_info.guest_rip),
-                            exit_info.exit_instruction_length as _,
-                        )?;
+                        // self.decode_instruction(
+                        //     GuestVirtAddr::from_usize(exit_info.guest_rip),
+                        //     exit_info.exit_instruction_length as _,
+                        // )?;
 
                         AxVCpuExitReason::NestedPageFault {
                             addr: ept_info.fault_guest_paddr,
@@ -1584,7 +1585,7 @@ impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
         self.guest_page_table_query(gva).ok()
     }
 
-    fn current_ept_root(&self) -> HostPhysAddr {
+    fn ept_pointer(&self) -> EPTPointer {
         vmcs::get_ept_pointer()
     }
 
