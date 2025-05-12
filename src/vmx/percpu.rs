@@ -130,7 +130,7 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
                 )
             })?;
         }
-        info!("[AxVM] succeeded to turn on VMX.");
+        debug!("[AxVM] succeeded to turn on VMX.");
 
         Ok(())
     }
