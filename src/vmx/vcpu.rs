@@ -521,6 +521,11 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     /// to avoid complexity and minimize the modification,
     /// we just keep them separated.
     fn setup_vmcs_guest_from_ctx(&mut self, host_ctx: LinuxContext) -> AxResult {
+        trace!(
+            "VCpu[{}] setup_vmcs_guest_from_ctx: {:#x?}",
+            self.id, host_ctx
+        );
+
         let linux = host_ctx;
 
         self.set_cr(0, linux.cr0.bits());

@@ -158,6 +158,9 @@ impl LinuxContext {
         }
     }
 
+    /// The initialized context of the instance's first process.
+    /// It is used to initialize the vCPU context for the shim kernel which enters
+    /// under Intel's long mode.
     pub fn construct_guest64(rip: u64, cr3: u64) -> Self {
         Self {
             rsp: 0,
