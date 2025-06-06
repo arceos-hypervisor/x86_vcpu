@@ -9,9 +9,9 @@ use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo, device::AccessWidth};
 use axerrno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
 
 use super::VmxExitInfo;
 use super::as_axerr;
