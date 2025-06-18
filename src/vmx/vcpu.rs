@@ -1,5 +1,4 @@
 use alloc::collections::VecDeque;
-use axdevice_base::BaseDeviceOps;
 use bit_field::BitField;
 use core::{arch::naked_asm, fmt::{Debug, Formatter, Result}, mem::size_of};
 use raw_cpuid::CpuId;
@@ -10,6 +9,8 @@ use x86_vlapic::EmulatedLocalApic;
 use axaddrspace::{device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange}, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use axdevice_base::BaseDeviceOps;
+use axvisor_api::vmm::{VCpuId, VMId};
 
 use super::VmxExitInfo;
 use super::as_axerr;
@@ -19,7 +20,7 @@ use super::vmcs::{
     self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
     VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
+use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters, vmx::vcpu};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
@@ -109,7 +110,7 @@ pub struct VmxVcpu<H: AxVCpuHal> {
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
     /// Create a new [`VmxVcpu`].
-    pub fn new() -> AxResult<Self> {
+    pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> AxResult<Self> {
         let vmcs_revision_id = super::read_vmcs_revision_id();
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
@@ -122,7 +123,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             io_bitmap: IOBitmap::passthrough_all()?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
-            vlapic: EmulatedLocalApic::new(0, 0),
+            vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
             xstate: XState::new(),
             #[cfg(feature = "tracing")]
             guest_regs_exiting: GeneralRegisters::default(),
@@ -916,7 +917,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         if write {
             let value = self.read_edx_eax() as usize;
 
-            info!(
+            trace!(
                 "handle_vlapic_msr_write: msr={:#x}, value={:#x}",
                 msr, value
             );
@@ -930,7 +931,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         } else {
             let value = <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_read(&self.vlapic, SysRegAddr::new(msr), AccessWidth::Qword)? as u64;
 
-            info!("handle_vlapic_msr_read: msr={:#x}, value={:#x}", msr, value);
+            trace!("handle_vlapic_msr_read: msr={:#x}, value={:#x}", msr, value);
 
             self.write_edx_eax(value);
             Ok(())
@@ -1205,8 +1206,8 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 
     type SetupConfig = ();
 
-    fn new(_config: Self::CreateConfig) -> AxResult<Self> {
-        Self::new()
+    fn new(vm_id: VMId, vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxResult<Self> {
+        Self::new(vm_id, vcpu_id)
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
@@ -1348,5 +1349,9 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
             panic!()
         }
         Ok(self.queue_event(vector as u8, None))
+    }
+    
+    fn set_return_value(&mut self, val: usize) {
+        self.regs_mut().rax = val as u64;
     }
 }
