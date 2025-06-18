@@ -1,15 +1,27 @@
 use alloc::collections::VecDeque;
 use bit_field::BitField;
-use core::{arch::naked_asm, fmt::{Debug, Formatter, Result}, mem::size_of};
+use core::{
+    arch::naked_asm,
+    fmt::{Debug, Formatter, Result},
+    mem::size_of,
+};
 use raw_cpuid::CpuId;
-use x86::{bits64::vmx, controlregs::{xcr0 as xcr0_read, xcr0_write, Xcr0}, dtables::{self, DescriptorTablePointer}, segmentation::SegmentSelector};
+use x86::{
+    bits64::vmx,
+    controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write},
+    dtables::{self, DescriptorTablePointer},
+    segmentation::SegmentSelector,
+};
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 use x86_vlapic::EmulatedLocalApic;
 
-use axaddrspace::{device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange}, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
+use axaddrspace::{
+    GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo,
+    device::{AccessWidth, Port, SysRegAddr, SysRegAddrRange},
+};
+use axdevice_base::BaseDeviceOps;
 use axerrno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
-use axdevice_base::BaseDeviceOps;
 use axvisor_api::vmm::{VCpuId, VMId};
 
 use super::VmxExitInfo;
@@ -201,7 +213,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             // Tracing, do a diff of the guest registers before entering the guest
             let diff = GeneralRegistersDiff::new(self.guest_regs_exiting, self.guest_regs);
             if !diff.is_same() {
-                debug!("VCpu registers changed during handling VM-exit: {:#x?}", diff);
+                debug!(
+                    "VCpu registers changed during handling VM-exit: {:#x?}",
+                    diff
+                );
             } else {
                 debug!("VCpu registers unchanged during handling VM-exit");
             }
@@ -929,7 +944,11 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 value,
             )
         } else {
-            let value = <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_read(&self.vlapic, SysRegAddr::new(msr), AccessWidth::Qword)? as u64;
+            let value = <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_read(
+                &self.vlapic,
+                SysRegAddr::new(msr),
+                AccessWidth::Qword,
+            )? as u64;
 
             trace!("handle_vlapic_msr_read: msr={:#x}, value={:#x}", msr, value);
 
@@ -1350,7 +1369,7 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
         }
         Ok(self.queue_event(vector as u8, None))
     }
-    
+
     fn set_return_value(&mut self, val: usize) {
         self.regs_mut().rax = val as u64;
     }

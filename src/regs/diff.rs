@@ -1,6 +1,6 @@
 use super::GeneralRegisters;
-use core::fmt::Debug;
 use alloc::format;
+use core::fmt::Debug;
 
 /// The comparison result of all general-purpose registers after a change.
 pub struct GeneralRegistersDiff {
@@ -14,10 +14,7 @@ impl GeneralRegistersDiff {
 
     /// Creates a new `GeneralRegistersDiff` instance by comparing two `GeneralRegisters` instances.
     pub fn new(old: GeneralRegisters, new: GeneralRegisters) -> Self {
-        GeneralRegistersDiff {
-            old,
-            new,
-        }
+        GeneralRegistersDiff { old, new }
     }
 
     /// Returns `true` if all general-purpose registers are unchanged.
@@ -39,7 +36,10 @@ impl Debug for GeneralRegistersDiff {
             let new = self.new.get_reg_of_index(i);
 
             if old != new {
-                debug.field(GeneralRegisters::register_name(i), &format!("{:#x} -> {:#x}", old, new));
+                debug.field(
+                    GeneralRegisters::register_name(i),
+                    &format!("{:#x} -> {:#x}", old, new),
+                );
             }
         }
 

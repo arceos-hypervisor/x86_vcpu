@@ -233,8 +233,12 @@ impl GeneralRegisters {
         clear_other_bits = false,
     );
 
-    define_reg_getter_setters!([(ah, rax), (ch, rcx), (dh, rdx), (bh, rbx),], u8, 8..16, 
-    clear_other_bits = false,);
+    define_reg_getter_setters!(
+        [(ah, rax), (ch, rcx), (dh, rdx), (bh, rbx),],
+        u8,
+        8..16,
+        clear_other_bits = false,
+    );
 }
 
 #[cfg(test)]
