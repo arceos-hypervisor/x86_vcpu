@@ -50,7 +50,7 @@ pub struct GeneralRegisters {
 
 impl GeneralRegisters {
     /// The names of the general-purpose registers in 64-bit x86 architecture.
-    /// 
+    ///
     /// We follow the order of registers opcode encoding.
     pub const REGISTER_NAMES: [&'static str; 16] = [
         "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
