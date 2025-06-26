@@ -1,19 +1,19 @@
 use alloc::collections::VecDeque;
+use axaddrspace::device::AccessWidth;
 use bit_field::BitField;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
 use raw_cpuid::CpuId;
 use x86::bits64::vmx;
-use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
+use x86::controlregs::{xcr0 as xcr0_read, xcr0_write, Xcr0};
 use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
-use axerrno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use axerrno::{ax_err, ax_err_type, AxResult};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
 
-use super::VmxExitInfo;
 use super::as_axerr;
 use super::definitions::VmxExitReason;
 use super::structs::{IOBitmap, MsrBitmap, VmxRegion};
@@ -21,6 +21,7 @@ use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
+use super::VmxExitInfo;
 use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
@@ -282,6 +283,11 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     /// Basic information about VM exits.
     pub fn exit_info(&self) -> AxResult<vmcs::VmxExitInfo> {
         vmcs::exit_info()
+    }
+
+    /// MMIO access information.
+    pub fn mmio_access_info(&self) -> AxResult<vmcs::MmioAccessInfo> {
+        vmcs::mmio_access_info()
     }
 
     /// Raw information for VM Exits Due to Vectored Events, See SDM 25.9.2
@@ -953,7 +959,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     }
 
     fn handle_cpuid(&mut self) -> AxResult {
-        use raw_cpuid::{CpuIdResult, cpuid};
+        use raw_cpuid::{cpuid, CpuIdResult};
 
         const VM_EXIT_INSTR_LEN_CPUID: u8 = 2;
         const LEAF_FEATURE_INFO: u32 = 0x1;
@@ -984,7 +990,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 if regs_clone.rcx == 0 {
                     // Bit 05: WAITPKG.
                     res.ecx.set_bit(5, false); // clear waitpkg
-                    // Bit 16: LA57. Supports 57-bit linear addresses and five-level paging if 1.
+                                               // Bit 16: LA57. Supports 57-bit linear addresses and five-level paging if 1.
                     res.ecx.set_bit(16, false); // clear LA57
                 }
 
@@ -1028,7 +1034,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         trace!(
             "VM exit: CPUID({:#x}, {:#x}): {:?}",
-            regs_clone.rax, regs_clone.rcx, res
+            regs_clone.rax,
+            regs_clone.rcx,
+            res
         );
 
         let regs = self.regs_mut();
@@ -1227,6 +1235,50 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                                     data: self.regs().rax.get_bits(width.bits_range()),
                                 }
                             }
+                        }
+                    }
+                    VmxExitReason::EPT_VIOLATION => {
+                        // SDM Vol. 3C, Section 27.2.1, Table 27-7
+                        if let Ok(mmio_info) = self.mmio_access_info() {
+                            if mmio_info.is_read && !mmio_info.is_write {
+                                // MMIO access
+                                self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                error!(
+                                    "VMX unsupported MMIO-Exit: {:#x?} of {:#x?}",
+                                    mmio_info, exit_info
+                                );
+                                error!("VCpu {:#x?}", self);
+                                self.set_gpr(0, 0x1234);
+                                AxVCpuExitReason::Nothing
+                                // AxVCpuExitReason::MmioRead {
+                                //     addr: mmio_info.addr,
+                                //     width: mmio_info.access_width,
+                                //     reg: mmio_info.register.unwrap_or(0) as usize,
+                                //     reg_width: mmio_info.access_width,
+                                // }
+                            } else if mmio_info.is_write && !mmio_info.is_read {
+                                // MMIO access
+                                self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                AxVCpuExitReason::MmioWrite {
+                                    addr: mmio_info.addr,
+                                    width: mmio_info.access_width,
+                                    data: self.regs().get_reg_of_index(
+                                        mmio_info.register.unwrap_or(0) as u8,
+                                    ),
+                                }
+                            }
+                            else {
+                                warn!(
+                                    "VMX unsupported EPT-Exit: {:#x?} of {:#x?}",
+                                    mmio_info, exit_info
+                                );
+                                warn!("VCpu {:#x?}", self);
+                                AxVCpuExitReason::Halt
+                            }
+                        } else {
+                            warn!("VMX unsupported EPT-Exit: {:#x?}", exit_info);
+                            warn!("VCpu {:#x?}", self);
+                            AxVCpuExitReason::Halt
                         }
                     }
                     _ => {

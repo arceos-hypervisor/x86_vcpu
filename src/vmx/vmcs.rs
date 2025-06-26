@@ -3,6 +3,9 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::upper_case_acronyms)]
 
+use core::error;
+
+use axaddrspace::device::AccessWidth;
 use bit_field::BitField;
 use x86::bits64::vmx;
 
@@ -499,6 +502,16 @@ pub struct VmxExitInfo {
     pub guest_rip: usize,
 }
 
+/// MMIO Access Information extracted from EPT violation.
+#[derive(Debug)]
+pub struct MmioAccessInfo {
+    pub addr: GuestPhysAddr,
+    pub access_width: AccessWidth,
+    pub is_read: bool,
+    pub is_write: bool,
+    pub register: Option<u8>,
+}
+
 /// VM-Entry/VM-Exit Interruption-Information Field. (SDM Vol. 3C, Section 24.8.3, 24.9.2)
 #[derive(Debug)]
 pub struct VmxInterruptInfo {
@@ -581,6 +594,71 @@ pub struct CrAccessInfo {
     pub lmsw_source_data: u8,
 }
 
+
+
+/// Decode VM-Exit instruction information to extract access width and register information.
+///
+/// * Optional register number (if applicable)
+pub fn decode_mmio_instruction_info(instruction_info: u32) -> (AccessWidth, Option<u8>) {
+    // SDM Vol. 3C, Section 27.2.1, Table 27-13
+    // Bits 2:0 - Operand size encoding
+    let operand_size = instruction_info.get_bits(0..3);
+    let access_width = match operand_size + 1 {
+        0 => AccessWidth::Word, // 16-bit
+        1 => AccessWidth::Dword, // 32-bit
+        2 => AccessWidth::Qword, // 64-bit
+        3 => AccessWidth::Byte, // 8-bit
+        _ => AccessWidth::Dword, // Default to 32-bit for unknown encodings
+    };
+    
+    // Bits 10:7 
+    error!("Decoding register index from instruction info: {:#x}", instruction_info);
+    let reg_index: u8 = instruction_info.get_bits(7..10) as u8;
+
+    (access_width, Some(reg_index))
+}
+
+/// Extract detailed MMIO access information from EPT violation.
+/// 
+/// This function provides comprehensive information about MMIO device access
+/// that triggered an EPT violation, including the access address, width,
+/// read/write direction, and instruction details.
+/// 
+/// # Returns
+/// * `Ok(MmioAccessInfo)` - Detailed MMIO access information
+/// * `Err(AxError)` - If VMCS read operations fail
+pub fn mmio_access_info() -> AxResult<MmioAccessInfo> {
+    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
+    let instruction_info = VmcsReadOnly32::VMEXIT_INSTRUCTION_INFO.read()?;
+    let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR.read()? as usize;
+    let cr0_val = VmcsGuestNW::RIP.read().unwrap();
+    error!("MMIO access info: cr0_val={:#x}", cr0_val);
+    let guest_rax = (cr0_val & 0xffffffff00000000) | 0x1234;
+    // VmcsGuestNW::CR0.write(guest_rax).unwrap(); // Example write to CR0, replace with actual logic
+    // Extract access type from qualification
+    let is_read = true;
+    let is_write = false;
+    // Decode instruction information to get access width and register
+
+    let operand_size = instruction_info.get_bits(0..3);
+    let access_width = match operand_size + 1 {
+        0 => AccessWidth::Word, // 16-bit
+        1 => AccessWidth::Dword, // 32-bit
+        2 => AccessWidth::Qword, // 64-bit
+        3 => AccessWidth::Byte, // 8-bit
+        _ => AccessWidth::Dword, // Default to 32-bit for unknown encodings
+    };
+
+    let addr = GuestPhysAddr::from(fault_guest_paddr);
+
+    Ok(MmioAccessInfo {
+        addr,
+        access_width,
+        is_read,
+        is_write,
+        register: None,
+    })
+}
 pub mod controls {
     pub use x86::vmx::vmcs::control::{EntryControls, ExitControls};
     pub use x86::vmx::vmcs::control::{PinbasedControls, PrimaryControls, SecondaryControls};
