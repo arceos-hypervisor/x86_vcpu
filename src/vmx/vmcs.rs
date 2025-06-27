@@ -808,13 +808,14 @@ pub fn mmio_access_exit_reason(guest_regs: &crate::regs::GeneralRegisters) -> Ax
 
     // Decode instruction information to get access width and register
     let operand_size = instruction_info.get_bits(0..3);
-    let access_width = match operand_size {
-        0 => AccessWidth::Byte,   // 8-bit
-        1 => AccessWidth::Word,   // 16-bit
-        2 => AccessWidth::Dword,  // 32-bit
-        3 => AccessWidth::Qword,  // 64-bit
-        _ => AccessWidth::Dword,  // Default to 32-bit for unknown encodings
-    };
+    let access_width = AccessWidth::Dword;
+    // match operand_size + 1 {
+    //     0 => AccessWidth::Byte,   // 8-bit
+    //     1 => AccessWidth::Word,   // 16-bit
+    //     2 => AccessWidth::Dword,  // 32-bit
+    //     3 => AccessWidth::Qword,  // 64-bit
+    //     _ => AccessWidth::Dword,  // Default to 32-bit for unknown encodings
+    // };
 
     let addr = GuestPhysAddr::from(fault_guest_paddr);
     let reg_index = instruction_info.get_bits(7..10) as usize;

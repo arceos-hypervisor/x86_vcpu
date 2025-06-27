@@ -1236,6 +1236,7 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                         }
                     }
                     VmxExitReason::EPT_VIOLATION => {
+                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
 
                         // Get the MMIO access exit reason
@@ -1244,13 +1245,16 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                                 match &exit_reason {
                                     AxVCpuExitReason::MmioRead { addr, width, reg, .. } => {
                                         error!("MMIO Read: addr={:#x}, width={:?}, reg={}", addr, width, reg);
+                                        self.set_gpr(0, 0x00);
                                     }
                                     AxVCpuExitReason::MmioWrite { addr, width, data } => {
                                         error!("MMIO Write: addr={:#x}, width={:?}, data={:#x}", addr, width, data);
+                                        self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                        self.advance_rip(exit_info.exit_instruction_length as _)?;
                                     }
                                     _ => unreachable!("mmio_access_exit_reason should only return MmioRead or MmioWrite"),
                                 }
-                                exit_reason
+                                AxVCpuExitReason::Nothing
                             }
                             Err(e) => {
                                 error!("Failed to get MMIO access info: {:?}", e);
