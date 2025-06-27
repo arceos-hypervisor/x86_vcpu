@@ -873,6 +873,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmcs::mmio_access_exit_reason(&self.guest_regs)
     }
 
+    fn exit_instruction_length(&self) -> AxResult<u32> {
+        vmcs::exit_instruction_length()
+    }
+
     /// Try to inject a pending event before next VM entry.
     fn inject_pending_events(&mut self) -> AxResult {
         if let Some(event) = self.pending_events.front() {
@@ -1237,24 +1241,26 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                     }
                     VmxExitReason::EPT_VIOLATION => {
                         // self.advance_rip(exit_info.exit_instruction_length as _)?;
-                        self.advance_rip(exit_info.exit_instruction_length as _)?;
+                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
 
                         // Get the MMIO access exit reason
                         match self.mmio_access_exit_reason() {
                             Ok(exit_reason) => {
                                 match &exit_reason {
                                     AxVCpuExitReason::MmioRead { addr, width, reg, .. } => {
-                                        error!("MMIO Read: addr={:#x}, width={:?}, reg={}", addr, width, reg);
-                                        self.set_gpr(0, 0x00);
+                                        error!("MMIO Read: addr={:#x}, width={:?}, reg={}, exit_instruction_length={}", addr, width, *reg, self.exit_instruction_length()?);
+                                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
                                     }
                                     AxVCpuExitReason::MmioWrite { addr, width, data } => {
                                         error!("MMIO Write: addr={:#x}, width={:?}, data={:#x}", addr, width, data);
-                                        self.advance_rip(exit_info.exit_instruction_length as _)?;
-                                        self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
                                     }
                                     _ => unreachable!("mmio_access_exit_reason should only return MmioRead or MmioWrite"),
                                 }
-                                AxVCpuExitReason::Nothing
+                                self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                exit_reason
                             }
                             Err(e) => {
                                 error!("Failed to get MMIO access info: {:?}", e);

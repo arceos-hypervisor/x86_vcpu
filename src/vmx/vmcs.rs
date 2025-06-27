@@ -686,6 +686,11 @@ pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
     })
 }
 
+pub fn exit_instruction_length() -> AxResult<u32> {
+    // SDM Vol. 3C, Section 24.9.2
+    VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()
+}
+
 pub fn inject_event(vector: u8, err_code: Option<u32>) -> AxResult {
     // SDM Vol. 3C, Section 24.8.3
     let err_code = if VmxInterruptionType::vector_has_error_code(vector) {
@@ -805,6 +810,9 @@ pub fn mmio_access_exit_reason(guest_regs: &crate::regs::GeneralRegisters) -> Ax
     // Extract access type from qualification
     let is_read = qualification.get_bit(0);
     let is_write = qualification.get_bit(1);
+
+    error!("instruction_info {:#x}, qualification {:#x}, fault_guest_paddr {:#x}",
+           instruction_info, qualification, fault_guest_paddr);
 
     // Decode instruction information to get access width and register
     let operand_size = instruction_info.get_bits(0..3);
