@@ -3,6 +3,7 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::upper_case_acronyms)]
 
+use axaddrspace::device::AccessWidth;
 use bit_field::BitField;
 use x86::bits64::vmx;
 
@@ -512,6 +513,17 @@ pub struct VmxInterruptInfo {
     pub valid: bool,
 }
 
+ /// MMIO Access Information extracted from EPT violation.
+#[derive(Debug)]
+pub struct MmioAccessInfo {
+    pub addr: GuestPhysAddr,
+    pub access_width: AccessWidth,
+    pub is_read: bool,
+    pub is_write: bool,
+    pub register: u8,
+    pub data: Option<u64>,
+}
+
 impl VmxInterruptInfo {
     /// Convert from the interrupt vector and the error code.
     pub fn from(vector: u8, err_code: Option<u32>) -> Self {
@@ -770,5 +782,54 @@ pub fn cr_access_info() -> AxResult<CrAccessInfo> {
         lmsw_op_type: qualification.get_bits(6..7) as u8,
         gpr: qualification.get_bits(8..12) as u8,
         lmsw_source_data: qualification.get_bits(16..32) as u8,
+    })
+}
+
+/// Extract detailed MMIO access information from EPT violation.
+/// 
+/// This function provides comprehensive information about MMIO device access
+/// that triggered an EPT violation, including the access address, width,
+/// read/write direction, and instruction details.
+/// 
+/// # Returns
+/// * `Ok(MmioAccessInfo)` - Detailed MMIO access information
+/// * `Err(AxError)` - If VMCS read operations fail
+pub fn mmio_access_info() -> AxResult<MmioAccessInfo> {
+    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
+    let instruction_info = VmcsReadOnly32::VMEXIT_INSTRUCTION_INFO.read()?;
+    let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR.read()? as usize;
+    // VmcsGuestNW::CR0.write(guest_rax).unwrap(); // Example write to CR0, replace with actual logic
+    // Extract access type from qualification
+    error!("qualification: {:#x}", qualification);
+    let is_read = qualification.get_bit(0);
+    // Access type is determined by the second bit in the qualification
+    let is_write = qualification.get_bit(1);
+    // Decode instruction information to get access width and register
+
+    let operand_size = instruction_info.get_bits(0..3);
+    let access_width = match operand_size + 1 {
+        0 => AccessWidth::Word, // 16-bit
+        1 => AccessWidth::Dword, // 32-bit
+        2 => AccessWidth::Qword, // 64-bit
+        3 => AccessWidth::Byte, // 8-bit
+        _ => AccessWidth::Dword, // Default to 32-bit for unknown encodings
+    };
+
+    let addr = GuestPhysAddr::from(fault_guest_paddr);
+    let reg_index: u8 = instruction_info.get_bits(7..10) as u8;
+
+    let data = if is_write {
+        Some(0 as u64)
+    } else {
+        None
+    };
+
+    Ok(MmioAccessInfo {
+        addr,
+        access_width,
+        is_read,
+        is_write,
+        register: reg_index,
+        data,
     })
 }

@@ -1,4 +1,5 @@
 use alloc::collections::VecDeque;
+use axaddrspace::device::AccessWidth;
 use bit_field::BitField;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
@@ -11,7 +12,7 @@ use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
 
 use super::VmxExitInfo;
 use super::as_axerr;
@@ -21,6 +22,7 @@ use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
+use crate::vmx::vmcs::VmcsReadOnly64;
 use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
@@ -866,6 +868,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         rflags as u64 & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0
             && block_state == 0
     }
+    /// MMIO access information.
+    pub fn mmio_access_info(&self) -> AxResult<vmcs::MmioAccessInfo> {
+        vmcs::mmio_access_info()
+    }
 
     /// Try to inject a pending event before next VM entry.
     fn inject_pending_events(&mut self) -> AxResult {
@@ -1228,6 +1234,31 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                                 }
                             }
                         }
+                    }
+                    VmxExitReason::EPT_VIOLATION => {
+                        self.advance_rip(exit_info.exit_instruction_length as _)?;
+                        self.advance_rip(exit_info.exit_instruction_length as _)?;
+                        let mmio_info = self.mmio_access_info();
+                        error!("VMX EPT Violation: {:#x?} of {:#x?}", mmio_info, exit_info);
+                        if let Ok(mmio_info) = mmio_info {
+                            if mmio_info.is_read {
+                                self.set_gpr(0, 0x74726976);
+                            } else {
+                                if let Some(data) = mmio_info.data {
+                                    error!("Data write {:#x}", data);
+                                } else {
+                                    error!("Data write None");
+                                }
+                            }
+                        };
+
+                        AxVCpuExitReason::Nothing
+                        // AxVCpuExitReason::MmioRead {
+                        //             addr: mmio_info.addr,
+                        //             width: mmio_info.access_width,
+                        //             reg: mmio_info.register as usize,
+                        //             reg_width: mmio_info.access_width,
+                        // }
                     }
                     _ => {
                         warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
