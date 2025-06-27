@@ -868,14 +868,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         rflags as u64 & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0
             && block_state == 0
     }
-    /// MMIO access information.
-    pub fn mmio_access_info(&self) -> AxResult<vmcs::MmioAccessInfo> {
-        vmcs::mmio_access_info()
-    }
-
-    /// MMIO access information with guest register data.
-    pub fn mmio_access_info_with_regs(&self) -> AxResult<vmcs::MmioAccessInfo> {
-        vmcs::mmio_access_info_with_regs(&self.guest_regs)
+    /// Get MMIO access exit reason from EPT violation.
+    pub fn mmio_access_exit_reason(&self) -> AxResult<AxVCpuExitReason> {
+        vmcs::mmio_access_exit_reason(&self.guest_regs)
     }
 
     /// Try to inject a pending event before next VM entry.
@@ -1242,28 +1237,26 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                     }
                     VmxExitReason::EPT_VIOLATION => {
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
-                        self.advance_rip(exit_info.exit_instruction_length as _)?;
-                        let mmio_info = self.mmio_access_info_with_regs();
-                        error!("VMX EPT Violation: {:#x?} of {:#x?}", mmio_info, exit_info);
-                        if let Ok(mmio_info) = mmio_info {
-                            if mmio_info.is_read {
-                                self.set_gpr(0, 0x74726976);
-                            } else {
-                                if let Some(data) = mmio_info.data {
-                                    error!("Data write {:#x}", data);
-                                } else {
-                                    error!("Data write None");
-                                }
-                            }
-                        };
 
-                        AxVCpuExitReason::Nothing
-                        // AxVCpuExitReason::MmioRead {
-                        //             addr: mmio_info.addr,
-                        //             width: mmio_info.access_width,
-                        //             reg: mmio_info.register as usize,
-                        //             reg_width: mmio_info.access_width,
-                        // }
+                        // Get the MMIO access exit reason
+                        match self.mmio_access_exit_reason() {
+                            Ok(exit_reason) => {
+                                match &exit_reason {
+                                    AxVCpuExitReason::MmioRead { addr, width, reg, .. } => {
+                                        error!("MMIO Read: addr={:#x}, width={:?}, reg={}", addr, width, reg);
+                                    }
+                                    AxVCpuExitReason::MmioWrite { addr, width, data } => {
+                                        error!("MMIO Write: addr={:#x}, width={:?}, data={:#x}", addr, width, data);
+                                    }
+                                    _ => unreachable!("mmio_access_exit_reason should only return MmioRead or MmioWrite"),
+                                }
+                                exit_reason
+                            }
+                            Err(e) => {
+                                error!("Failed to get MMIO access info: {:?}", e);
+                                AxVCpuExitReason::Halt
+                            }
+                        }
                     }
                     _ => {
                         warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);

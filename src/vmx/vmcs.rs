@@ -785,117 +785,67 @@ pub fn cr_access_info() -> AxResult<CrAccessInfo> {
     })
 }
 
-/// Extract detailed MMIO access information from EPT violation.
+/// Extract MMIO access information from EPT violation and return appropriate AxVCpuExitReason.
 ///
-/// This function provides comprehensive information about MMIO device access
-/// that triggered an EPT violation, including the access address, width,
-/// read/write direction, and instruction details.
-///
-/// # Returns
-/// * `Ok(MmioAccessInfo)` - Detailed MMIO access information
-/// * `Err(AxError)` - If VMCS read operations fail
-pub fn mmio_access_info() -> AxResult<MmioAccessInfo> {
-    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
-    let instruction_info = VmcsReadOnly32::VMEXIT_INSTRUCTION_INFO.read()?;
-    let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR.read()? as usize;
-
-    // Extract access type from qualification
-    error!("qualification: {:#x}", qualification);
-    let is_read = qualification.get_bit(0);
-    // Access type is determined by the second bit in the qualification
-    let is_write = qualification.get_bit(1);
-    // Decode instruction information to get access width and register
-
-    let operand_size = instruction_info.get_bits(0..3);
-    let access_width = match operand_size + 1 {
-        0 => AccessWidth::Word, // 16-bit
-        1 => AccessWidth::Dword, // 32-bit
-        2 => AccessWidth::Qword, // 64-bit
-        3 => AccessWidth::Byte, // 8-bit
-        _ => AccessWidth::Dword, // Default to 32-bit for unknown encodings
-    };
-
-    let addr = GuestPhysAddr::from(fault_guest_paddr);
-    let reg_index: u8 = instruction_info.get_bits(7..10) as u8;
-
-    // For write operations, we need to get the data from guest registers
-    // This will be set by the caller who has access to guest registers
-    let data = if is_write {
-        Some(0 as u64) // Placeholder - will be filled by caller
-    } else {
-        None
-    };
-
-    Ok(MmioAccessInfo {
-        addr,
-        access_width,
-        is_read,
-        is_write,
-        register: reg_index,
-        data,
-    })
-}
-
-/// Extract detailed MMIO access information from EPT violation with guest register data.
-///
-/// This function provides comprehensive information about MMIO device access
-/// that triggered an EPT violation, including the access address, width,
-/// read/write direction, instruction details, and actual data for write operations.
+/// This function analyzes the EPT violation to determine if it's a MMIO read or write operation,
+/// extracts the necessary information, and returns the appropriate exit reason.
 ///
 /// # Arguments
 /// * `guest_regs` - Reference to guest general-purpose registers
 ///
 /// # Returns
-/// * `Ok(MmioAccessInfo)` - Detailed MMIO access information with actual data
-/// * `Err(AxError)` - If VMCS read operations fail
-pub fn mmio_access_info_with_regs(guest_regs: &crate::regs::GeneralRegisters) -> AxResult<MmioAccessInfo> {
+/// * `Ok(AxVCpuExitReason::MmioRead)` - For read operations with addr, width, reg, reg_width
+/// * `Ok(AxVCpuExitReason::MmioWrite)` - For write operations with addr, width, data
+/// * `Err(AxError)` - If VMCS read operations fail or invalid access type
+pub fn mmio_access_exit_reason(guest_regs: &crate::regs::GeneralRegisters) -> AxResult<axvcpu::AxVCpuExitReason> {
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     let instruction_info = VmcsReadOnly32::VMEXIT_INSTRUCTION_INFO.read()?;
     let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR.read()? as usize;
 
     // Extract access type from qualification
-    error!("qualification: {:#x}", qualification);
     let is_read = qualification.get_bit(0);
-    // Access type is determined by the second bit in the qualification
     let is_write = qualification.get_bit(1);
-    // Decode instruction information to get access width and register
 
+    // Decode instruction information to get access width and register
     let operand_size = instruction_info.get_bits(0..3);
-    let access_width = match operand_size + 1 {
-        0 => AccessWidth::Word, // 16-bit
-        1 => AccessWidth::Dword, // 32-bit
-        2 => AccessWidth::Qword, // 64-bit
-        3 => AccessWidth::Byte, // 8-bit
-        _ => AccessWidth::Dword, // Default to 32-bit for unknown encodings
+    let access_width = match operand_size {
+        0 => AccessWidth::Byte,   // 8-bit
+        1 => AccessWidth::Word,   // 16-bit
+        2 => AccessWidth::Dword,  // 32-bit
+        3 => AccessWidth::Qword,  // 64-bit
+        _ => AccessWidth::Dword,  // Default to 32-bit for unknown encodings
     };
 
     let addr = GuestPhysAddr::from(fault_guest_paddr);
-    let reg_index: u8 = instruction_info.get_bits(7..10) as u8;
+    let reg_index = instruction_info.get_bits(7..10) as usize;
 
-    // For write operations, get the actual data from the guest register
-    let data = if is_write {
-        // Get the full register value
-        let reg_value = guest_regs.get_reg_of_index(reg_index);
+    if is_read {
+        // For read operations, return MmioRead with register information
+        Ok(axvcpu::AxVCpuExitReason::MmioRead {
+            addr,
+            width: access_width,
+            reg: reg_index,
+            reg_width: access_width, // Register width same as access width
+        })
+    } else if is_write {
+        // For write operations, get the data from the guest register
+        let reg_value = guest_regs.get_reg_of_index(reg_index as u8);
 
         // Mask the value based on access width to get only the relevant bits
-        let masked_value = match access_width {
+        let data = match access_width {
             AccessWidth::Byte => reg_value & 0xFF,
             AccessWidth::Word => reg_value & 0xFFFF,
             AccessWidth::Dword => reg_value & 0xFFFFFFFF,
             AccessWidth::Qword => reg_value,
         };
 
-        Some(masked_value)
+        Ok(axvcpu::AxVCpuExitReason::MmioWrite {
+            addr,
+            width: access_width,
+            data,
+        })
     } else {
-        None
-    };
-
-    Ok(MmioAccessInfo {
-        addr,
-        access_width,
-        is_read,
-        is_write,
-        register: reg_index,
-        data,
-    })
+        // Neither read nor write - this shouldn't happen for valid MMIO access
+        Err(axerrno::AxError::InvalidInput)
+    }
 }
