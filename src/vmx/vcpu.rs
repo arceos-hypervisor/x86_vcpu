@@ -873,6 +873,11 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vmcs::mmio_access_info()
     }
 
+    /// MMIO access information with guest register data.
+    pub fn mmio_access_info_with_regs(&self) -> AxResult<vmcs::MmioAccessInfo> {
+        vmcs::mmio_access_info_with_regs(&self.guest_regs)
+    }
+
     /// Try to inject a pending event before next VM entry.
     fn inject_pending_events(&mut self) -> AxResult {
         if let Some(event) = self.pending_events.front() {
@@ -1238,7 +1243,7 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                     VmxExitReason::EPT_VIOLATION => {
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
-                        let mmio_info = self.mmio_access_info();
+                        let mmio_info = self.mmio_access_info_with_regs();
                         error!("VMX EPT Violation: {:#x?} of {:#x?}", mmio_info, exit_info);
                         if let Ok(mmio_info) = mmio_info {
                             if mmio_info.is_read {
