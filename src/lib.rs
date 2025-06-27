@@ -14,6 +14,7 @@ pub(crate) mod msr;
 pub(crate) mod regs;
 mod ept;
 mod frame;
+mod instruction_emulator;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "vmx")] {

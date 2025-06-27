@@ -6,7 +6,8 @@
 use axaddrspace::device::AccessWidth;
 use bit_field::BitField;
 use x86::bits64::vmx;
-
+use alloc::vec::Vec;
+use alloc::vec;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err};
 use page_table_entry::MappingFlags;
@@ -857,4 +858,37 @@ pub fn mmio_access_exit_reason(guest_regs: &crate::regs::GeneralRegisters) -> Ax
         // Neither read nor write - this shouldn't happen for valid MMIO access
         Err(axerrno::AxError::InvalidInput)
     }
+}
+
+/// Read instruction bytes at guest RIP address.
+///
+/// This function reads instruction bytes from guest memory at the current RIP location.
+/// It's primarily used by the instruction emulator to calculate instruction length
+/// for proper RIP advancement in EPT violation handling.
+///
+/// # Arguments
+/// * `max_bytes` - Maximum number of bytes to read (typically 15 for x86 instructions)
+///
+/// # Returns
+/// * `Ok(Vec<u8>)` - Instruction bytes read from guest memory
+/// * `Err(AxError)` - If VMCS read fails or guest memory access fails
+///
+/// # Note
+/// This is currently a placeholder implementation that returns a minimal instruction.
+/// In a complete implementation, this would use HAL or other mechanisms to read
+/// from guest physical/virtual memory at the RIP location.
+pub fn read_guest_instruction_at_rip(max_bytes: usize) -> AxResult<Vec<u8>> {
+    let _guest_rip = VmcsGuestNW::RIP.read()?;
+    
+    // TODO: Implement actual guest memory reading via HAL or other mechanisms
+    // This would typically involve:
+    // 1. Convert guest linear address to guest physical address using guest page tables
+    // 2. Use HAL or direct memory access to read from guest physical memory
+    // 3. Handle potential page boundary crossings for instructions
+    
+    // Placeholder: Return a simple NOP instruction (0x90) for now
+    // In real implementation, this should read actual guest memory
+    let placeholder_instruction = vec![0x90, 0x90, 0x90]; // 3-byte NOP sequence
+    
+    Ok(placeholder_instruction.into_iter().take(max_bytes).collect())
 }

@@ -10,7 +10,7 @@ use axerrno::ax_err_type;
 
 pub use self::definitions::VmxExitReason;
 pub use self::percpu::VmxPerCpuState as VmxArchPerCpuState;
-pub use self::vcpu::VmxVcpu as VmxArchVCpu;
+pub use self::vcpu::{VmxVcpu as VmxArchVCpu, VmCpuMode};
 pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
 
 /// Return if current platform support virtualization extension.

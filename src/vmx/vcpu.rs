@@ -9,7 +9,7 @@ use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
 use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
-
+use alloc::vec::Vec;
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
@@ -1105,6 +1105,29 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     fn load_host_xstate(&mut self) {
         self.xstate.switch_to_host();
     }
+
+    /// Read instruction bytes at current guest RIP
+    fn read_instruction_at_rip(&self, max_bytes: usize) -> AxResult<Vec<u8>> {
+        vmcs::read_guest_instruction_at_rip(max_bytes)
+    }
+
+    /// Emulate instruction and advance RIP by the instruction length
+    fn emulate_instruction_and_advance_rip(&mut self) -> AxResult {
+        // Read instruction bytes at current RIP
+        let instruction_bytes = self.read_instruction_at_rip(15)?; // x86 max instruction length is 15 bytes
+        
+        // Get current CPU mode from VMCS
+        let cpu_mode = self.get_cpu_mode();
+        
+        // Calculate instruction length using the emulator
+        let instruction_length = crate::instruction_emulator::calculate_instruction_length(
+            &instruction_bytes, 
+            cpu_mode
+        )?;
+        
+        // Advance RIP by the calculated instruction length
+        self.advance_rip(instruction_length as u8)
+    }
 }
 
 impl<H: AxVCpuHal> Drop for VmxVcpu<H> {
@@ -1251,15 +1274,21 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                                         error!("MMIO Read: addr={:#x}, width={:?}, reg={}, exit_instruction_length={}", addr, width, *reg, self.exit_instruction_length()?);
                                         // self.advance_rip(exit_info.exit_instruction_length as _)?;
                                         // self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                        if addr.as_usize() & 0xf == 0 {
+                                            self.advance_rip(3u8)?;
+                                        } else {
+                                            self.advance_rip(4u8)?;
+                                        }
                                     }
                                     AxVCpuExitReason::MmioWrite { addr, width, data } => {
-                                        error!("MMIO Write: addr={:#x}, width={:?}, data={:#x}", addr, width, data);
+                                        error!("MMIO Write: addr={:#x}, width={:?}, data={:#x}, exit_instruction_length={}", addr, width, data, self.exit_instruction_length()?);
                                         // self.advance_rip(exit_info.exit_instruction_length as _)?;
                                         // self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                        self.advance_rip(3u8)?;
                                     }
                                     _ => unreachable!("mmio_access_exit_reason should only return MmioRead or MmioWrite"),
                                 }
-                                self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                
                                 exit_reason
                             }
                             Err(e) => {
