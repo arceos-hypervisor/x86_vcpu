@@ -15,6 +15,7 @@ pub(crate) mod regs;
 mod ept;
 mod frame;
 mod instruction_emulator;
+mod page_table;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "vmx")] {
@@ -27,6 +28,14 @@ cfg_if::cfg_if! {
     }
 }
 
+use axaddrspace::GuestPhysAddr;
 pub use ept::GuestPageWalkInfo;
+use memory_addr::PhysAddr;
 pub use regs::GeneralRegisters;
 pub use vender::has_hardware_support;
+
+/// Legacy function for backward compatibility
+/// Use GuestMemoryAccess for new code
+pub fn translate_to_phys(addr: GuestPhysAddr) -> Option<PhysAddr> {
+    axvisor_api::guest_memory::translate_to_phys(axvisor_api::vmm::current_vm_id(), axvisor_api::vmm::current_vcpu_id(), addr)
+}

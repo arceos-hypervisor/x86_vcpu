@@ -1,19 +1,3 @@
-use alloc::collections::VecDeque;
-use axaddrspace::device::AccessWidth;
-use bit_field::BitField;
-use core::fmt::{Debug, Formatter, Result};
-use core::{arch::naked_asm, mem::size_of};
-use raw_cpuid::CpuId;
-use x86::bits64::vmx;
-use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
-use x86::dtables::{self, DescriptorTablePointer};
-use x86::segmentation::SegmentSelector;
-use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
-use alloc::vec::Vec;
-use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
-use axerrno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
-
 use super::VmxExitInfo;
 use super::as_axerr;
 use super::definitions::VmxExitReason;
@@ -22,8 +6,29 @@ use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
+use crate::page_table::GuestPageTable64;
+use crate::page_table::GuestPageWalkInfo;
+use crate::translate_to_phys;
 use crate::vmx::vmcs::VmcsReadOnly64;
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
+use crate::{msr::Msr, regs::GeneralRegisters};
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+use axaddrspace::EPTTranslator;
+use axaddrspace::device::AccessWidth;
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo};
+use axerrno::{AxResult, ax_err, ax_err_type};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use bit_field::BitField;
+use core::fmt::{Debug, Formatter, Result};
+use core::{arch::naked_asm, mem::size_of};
+use page_table_entry::x86_64::X64PTE;
+use page_table_multiarch::{PageSize, PagingHandler, PagingResult};
+use raw_cpuid::CpuId;
+use x86::bits64::vmx;
+use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
+use x86::dtables::{self, DescriptorTablePointer};
+use x86::segmentation::SegmentSelector;
+use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
@@ -237,6 +242,49 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         }
     }
 
+    /// Get Translate guest page table info
+    pub fn get_pagetable_walk_info(&self) -> GuestPageWalkInfo {
+        let cr3 = VmcsGuestNW::CR3.read().unwrap();
+        let level = self.get_paging_level();
+        let is_write_access = false;
+        let is_inst_fetch = false;
+        let is_user_mode_access = ((VmcsGuest32::SS_ACCESS_RIGHTS.read().unwrap() >> 5) & 0x3) == 3;
+        let mut pse = true;
+        let mut nxe =
+            (VmcsGuest64::IA32_EFER.read().unwrap() & EferFlags::NO_EXECUTE_ENABLE.bits()) != 0;
+        let wp = (VmcsGuestNW::CR0.read().unwrap() & Cr0Flags::WRITE_PROTECT.bits() as usize) != 0;
+        let is_smap_on = (VmcsGuestNW::CR4.read().unwrap()
+            & Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION.bits() as usize)
+            != 0;
+        let is_smep_on = (VmcsGuestNW::CR4.read().unwrap()
+            & Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION.bits() as usize)
+            != 0;
+        let width: u32;
+        if level == 4 || level == 3 {
+            width = 9;
+        } else if level == 2 {
+            width = 10;
+            pse = VmcsGuestNW::CR4.read().unwrap() & Cr4Flags::PAGE_SIZE_EXTENSION.bits() as usize
+                != 0;
+            nxe = false;
+        } else {
+            width = 0;
+        }
+        GuestPageWalkInfo {
+            cr3,
+            level,
+            width,
+            is_user_mode_access,
+            is_write_access,
+            is_inst_fetch,
+            pse,
+            wp,
+            nxe,
+            is_smap_on,
+            is_smep_on,
+        }
+    }
+
     /// Run the guest. It returns when a vm-exit happens and returns the vm-exit if it cannot be handled by this [`VmxVcpu`] itself.
     pub fn inner_run(&mut self) -> Option<VmxExitInfo> {
         // Inject pending events
@@ -341,49 +389,6 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         guest_rip + seg_base
     }
 
-    /// Get Translate guest page table info
-    pub fn get_ptw_info(&self) -> GuestPageWalkInfo {
-        let top_entry = VmcsGuestNW::CR3.read().unwrap();
-        let level = self.get_paging_level();
-        let is_write_access = false;
-        let is_inst_fetch = false;
-        let is_user_mode_access = ((VmcsGuest32::SS_ACCESS_RIGHTS.read().unwrap() >> 5) & 0x3) == 3;
-        let mut pse = true;
-        let mut nxe =
-            (VmcsGuest64::IA32_EFER.read().unwrap() & EferFlags::NO_EXECUTE_ENABLE.bits()) != 0;
-        let wp = (VmcsGuestNW::CR0.read().unwrap() & Cr0Flags::WRITE_PROTECT.bits() as usize) != 0;
-        let is_smap_on = (VmcsGuestNW::CR4.read().unwrap()
-            & Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION.bits() as usize)
-            != 0;
-        let is_smep_on = (VmcsGuestNW::CR4.read().unwrap()
-            & Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION.bits() as usize)
-            != 0;
-        let width: u32;
-        if level == 4 || level == 3 {
-            width = 9;
-        } else if level == 2 {
-            width = 10;
-            pse = VmcsGuestNW::CR4.read().unwrap() & Cr4Flags::PAGE_SIZE_EXTENSION.bits() as usize
-                != 0;
-            nxe = false;
-        } else {
-            width = 0;
-        }
-        GuestPageWalkInfo {
-            top_entry,
-            level,
-            width,
-            is_user_mode_access,
-            is_write_access,
-            is_inst_fetch,
-            pse,
-            wp,
-            nxe,
-            is_smap_on,
-            is_smep_on,
-        }
-    }
-
     /// Guest rip. (`RIP`)
     pub fn rip(&self) -> usize {
         VmcsGuestNW::RIP.read().unwrap()
@@ -431,6 +436,52 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     pub fn set_msr_intercept_of_range(&mut self, msr: u32, intercept: bool) {
         self.msr_bitmap.set_read_intercept(msr, intercept);
         self.msr_bitmap.set_write_intercept(msr, intercept);
+    }
+
+    pub fn decode_instruction(&self, rip_gva: GuestVirtAddr) -> AxResult {
+        use alloc::string::String;
+        use iced_x86::{Decoder, DecoderOptions, Formatter, IntelFormatter};
+
+        let (rip_gpa, _flags, page_size) = self.guest_page_table_query(rip_gva).map_err(|e| {
+            warn!(
+                "Failed to query guest page table, GVA {:?} err {:?}",
+                rip_gva, e
+            );
+            ax_err_type!(BadAddress)
+        })?;
+
+        panic!("rip_gpa: {:#x}, page_size: {:?}", rip_gpa, page_size);
+
+        // axhal
+        // let rip_phy_addr = H::EPTTranslator::guest_phys_to_host_phys(rip);
+
+        // let rip_phy_addr = translate_to_phys(rip.as_usize().into());
+
+        // if let Some(rip_phy_addr) = rip_phy_addr {
+        //     debug!(
+        //         "Decoding instruction at guest RIP: {:#x} (physical: {:#x})",
+        //         rip, rip_phy_addr
+        //     );
+        //     // Read the instruction bytes from guest memory.
+        //     let bytes =
+        //         unsafe { core::ptr::read_volatile(rip_phy_addr.as_usize() as *const [u8; 16]) };
+        //     let mut decoder = Decoder::with_ip(
+        //         64,
+        //         bytes.as_slice(),
+        //         rip.as_usize() as _,
+        //         DecoderOptions::NONE,
+        //     );
+        //     let instr = decoder.decode();
+        //     let mut output = String::new();
+        //     let mut formattor = IntelFormatter::new();
+        //     formattor.format(&instr, &mut output);
+
+        //     debug!("Decoded instruction @Intel formatter: {}", output);
+        // } else {
+        //     return ax_err!(BadAddress);
+        // }
+
+        Ok(())
     }
 }
 
@@ -739,6 +790,32 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             }
         }
         level as usize
+    }
+
+    /// Translate guest virtual addr to linear addr
+    fn gva_to_linear_addr(&self, vaddr: GuestVirtAddr) -> GuestVirtAddr {
+        let cpu_mode = self.get_cpu_mode();
+        let seg_base = if cpu_mode == VmCpuMode::Mode64 {
+            0
+        } else {
+            VmcsGuestNW::CS_BASE.read().unwrap()
+        };
+        vaddr + seg_base
+    }
+
+    pub fn guest_page_table_query(
+        &self,
+        gva: GuestVirtAddr,
+    ) -> PagingResult<(GuestPhysAddr, MappingFlags, PageSize)> {
+        let addr = self.gva_to_linear_addr(gva);
+
+        // debug!("guest_page_table_query: gva {:?} linear {:?}", gva, addr);
+
+        let guest_ptw_info = self.get_pagetable_walk_info();
+        let guest_page_table: GuestPageTable64<X64PTE, H::PagingHandler, H::EPTTranslator> =
+            GuestPageTable64::construct(&guest_ptw_info);
+
+        guest_page_table.query(addr)
     }
 }
 
@@ -1115,16 +1192,16 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     fn emulate_instruction_and_advance_rip(&mut self) -> AxResult {
         // Read instruction bytes at current RIP
         let instruction_bytes = self.read_instruction_at_rip(15)?; // x86 max instruction length is 15 bytes
-        
+
         // Get current CPU mode from VMCS
         let cpu_mode = self.get_cpu_mode();
-        
+
         // Calculate instruction length using the emulator
         let instruction_length = crate::instruction_emulator::calculate_instruction_length(
-            &instruction_bytes, 
-            cpu_mode
+            &instruction_bytes,
+            cpu_mode,
         )?;
-        
+
         // Advance RIP by the calculated instruction length
         self.advance_rip(instruction_length as u8)
     }
@@ -1263,32 +1340,35 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                         }
                     }
                     VmxExitReason::EPT_VIOLATION => {
-                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
-                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
-
                         // Get the MMIO access exit reason
                         match self.mmio_access_exit_reason() {
                             Ok(exit_reason) => {
+                                warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
+                                let _ = self.decode_instruction(GuestVirtAddr::from_usize(
+                                    exit_info.guest_rip,
+                                ));
                                 match &exit_reason {
-                                    AxVCpuExitReason::MmioRead { addr, width, reg, .. } => {
-                                        error!("MMIO Read: addr={:#x}, width={:?}, reg={}, exit_instruction_length={}", addr, width, *reg, self.exit_instruction_length()?);
-                                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
-                                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
-                                        if addr.as_usize() & 0xf == 0 {
-                                            self.advance_rip(3u8)?;
-                                        } else {
-                                            self.advance_rip(4u8)?;
-                                        }
-                                    }
-                                    AxVCpuExitReason::MmioWrite { addr, width, data } => {
-                                        error!("MMIO Write: addr={:#x}, width={:?}, data={:#x}, exit_instruction_length={}", addr, width, data, self.exit_instruction_length()?);
-                                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
-                                        // self.advance_rip(exit_info.exit_instruction_length as _)?;
+                                    AxVCpuExitReason::MmioRead {
+                                        addr, width, reg, ..
+                                    } => {
+                                        error!(
+                                            "MMIO Read: addr={:#x}, width={:?}, reg={}, exit_instruction_length={}",
+                                            addr, width, *reg, exit_info.exit_instruction_length
+                                        );
                                         self.advance_rip(3u8)?;
                                     }
-                                    _ => unreachable!("mmio_access_exit_reason should only return MmioRead or MmioWrite"),
+                                    AxVCpuExitReason::MmioWrite { addr, width, data } => {
+                                        error!(
+                                            "MMIO Write: addr={:#x}, width={:?}, data={:#x}, exit_instruction_length={}",
+                                            addr, width, data, exit_info.exit_instruction_length
+                                        );
+                                        self.advance_rip(3u8)?;
+                                    }
+                                    _ => unreachable!(
+                                        "mmio_access_exit_reason should only return MmioRead or MmioWrite"
+                                    ),
                                 }
-                                
+
                                 exit_reason
                             }
                             Err(e) => {
