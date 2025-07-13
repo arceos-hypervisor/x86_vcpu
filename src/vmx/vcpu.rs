@@ -1496,6 +1496,14 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                         warn!("VMX INIT: {:#x?}, just bring down current VM", exit_info);
                         AxVCpuExitReason::SystemDown
                     }
+                    VmxExitReason::VMFUNC => {
+                        warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
+                        warn!("VCpu {:#x?}", self);
+                        AxVCpuExitReason::EPTPSwitch {
+                            // Specifically, the value of ECX is used to select an entry from the EPTP list
+                            index: self.guest_regs.rcx as usize,
+                        }
+                    }
                     _ => {
                         warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
                         warn!("VCpu {:#x?}", self);
@@ -1592,6 +1600,13 @@ impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
 
     fn ept_pointer(&self) -> EPTPointer {
         vmcs::get_ept_pointer()
+    }
+
+    fn set_ept_pointer(&mut self, eptp: EPTPointer) -> AxResult {
+        use super::instructions::{InvEptType, invept};
+        VmcsControl64::EPTP.write(eptp.bits())?;
+        unsafe { invept(InvEptType::SingleContext, eptp.bits()).map_err(as_axerr)? };
+        Ok(())
     }
 
     fn eptp_list_region(&self) -> HostPhysAddr {

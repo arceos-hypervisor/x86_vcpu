@@ -161,7 +161,7 @@ impl LinuxContext {
     /// The initialized context of the instance's first process.
     /// It is used to initialize the vCPU context for the shim kernel which enters
     /// under Intel's long mode.
-    pub fn construct_guest64(rip: u64, cr3: u64) -> Self {
+    pub fn construct_guest64(rip: u64, cr3: u64, cr4: Cr4Flags) -> Self {
         Self {
             rsp: 0,
             rip,
@@ -225,7 +225,7 @@ impl LinuxContext {
                 | Cr0Flags::ALIGNMENT_MASK
                 | Cr0Flags::PAGING,
             cr3,
-            cr4: Cr4Flags::PHYSICAL_ADDRESS_EXTENSION | Cr4Flags::PAGE_GLOBAL,
+            cr4,
             efer: EferFlags::LONG_MODE_ENABLE
                 | EferFlags::LONG_MODE_ACTIVE
                 | EferFlags::NO_EXECUTE_ENABLE
