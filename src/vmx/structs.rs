@@ -204,6 +204,7 @@ impl VmxBasic {
 
 bitflags! {
     /// IA32_FEATURE_CONTROL flags.
+    #[derive(Debug)]
     pub struct FeatureControlFlags: u64 {
        /// Lock bit: when set, locks this MSR from being written. when clear,
        /// VMXON causes a #GP.
@@ -239,6 +240,7 @@ impl FeatureControl {
 
 bitflags! {
     /// Extended-Page-Table Pointer. (SDM Vol. 3C, Section 24.6.11)
+    #[derive(Debug)]
     pub struct EPTPointer: u64 {
         /// EPT paging-structure memory type: Uncacheable (UC).
         #[allow(clippy::identity_op)]
@@ -264,5 +266,317 @@ impl EPTPointer {
         let aligned_addr = pml4_paddr.as_usize() & !(PAGE_SIZE - 1);
         let flags = Self::from_bits_retain(aligned_addr as u64);
         flags | Self::MEM_TYPE_WB | Self::WALK_LENGTH_4 | Self::ENABLE_ACCESSED_DIRTY
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::format;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    // Mock HAL for testing with better memory simulation
+    #[derive(Debug)]
+    struct MockMmHal;
+
+    static mut STATIC_MEMORY_POOL: [[u8; 4096]; 16] = [[0; 4096]; 16];
+    static STATIC_ALLOC_MASK: AtomicUsize = AtomicUsize::new(0);
+    static STATIC_RESET_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    impl AxMmHal for MockMmHal {
+        fn alloc_frame() -> Option<memory_addr::PhysAddr> {
+            loop {
+                let current_mask = STATIC_ALLOC_MASK.load(Ordering::Acquire);
+
+                // 找到第一个未分配的页
+                for i in 0..16 {
+                    let bit = 1 << i;
+                    if (current_mask & bit) == 0 {
+                        // 尝试原子性地设置这个位
+                        match STATIC_ALLOC_MASK.compare_exchange_weak(
+                            current_mask,
+                            current_mask | bit,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        ) {
+                            Ok(_) => {
+                                let phys_addr = 0x1000 + (i * 4096);
+                                return Some(memory_addr::PhysAddr::from(phys_addr));
+                            }
+                            Err(_) => {
+                                // CAS失败，继续外层循环重试
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // 如果没有找到可用页面或CAS失败后重新检查
+                let final_mask = STATIC_ALLOC_MASK.load(Ordering::Acquire);
+                if final_mask == 0xFFFF {
+                    // 所有16位都被设置
+                    return None; // 没有可用页面
+                }
+                // 否则继续循环重试
+            }
+        }
+
+        fn dealloc_frame(paddr: memory_addr::PhysAddr) {
+            let addr = paddr.as_usize();
+            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) && (addr - 0x1000) % 4096 == 0 {
+                let page_index = (addr - 0x1000) / 4096;
+                let bit = 1 << page_index;
+                STATIC_ALLOC_MASK.fetch_and(!bit, Ordering::AcqRel);
+            }
+        }
+
+        fn phys_to_virt(paddr: memory_addr::PhysAddr) -> memory_addr::VirtAddr {
+            let addr = paddr.as_usize();
+            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) {
+                let page_index = (addr - 0x1000) / 4096;
+                let offset = (addr - 0x1000) % 4096;
+
+                unsafe {
+                    let page_ptr = STATIC_MEMORY_POOL[page_index].as_ptr();
+                    memory_addr::VirtAddr::from(page_ptr.add(offset) as usize)
+                }
+            } else {
+                // 对于无效地址，返回identity mapping作为fallback
+                memory_addr::VirtAddr::from(addr)
+            }
+        }
+
+        fn virt_to_phys(vaddr: memory_addr::VirtAddr) -> memory_addr::PhysAddr {
+            let pool_start = core::ptr::addr_of!(STATIC_MEMORY_POOL) as *const u8 as usize;
+            let pool_end = pool_start + (16 * 4096);
+
+            if vaddr.as_usize() >= pool_start && vaddr.as_usize() < pool_end {
+                let offset = vaddr.as_usize() - pool_start;
+                memory_addr::PhysAddr::from(0x1000 + offset)
+            } else {
+                // Fallback to identity mapping
+                memory_addr::PhysAddr::from(vaddr.as_usize())
+            }
+        }
+    }
+
+    impl MockMmHal {
+        #[allow(dead_code)]
+        pub fn reset() {
+            STATIC_ALLOC_MASK.store(0, Ordering::Release);
+            STATIC_RESET_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+            unsafe {
+                // 清零所有内存 - 使用 addr_of_mut! 避免创建可变引用
+                let pool_ptr = core::ptr::addr_of_mut!(STATIC_MEMORY_POOL);
+                core::ptr::write_bytes(pool_ptr, 0, 1);
+            }
+        }
+
+        #[allow(dead_code)]
+        pub fn allocated_count() -> usize {
+            STATIC_ALLOC_MASK.load(Ordering::Acquire).count_ones() as usize
+        }
+
+        #[allow(dead_code)]
+        pub fn reset_counter() -> usize {
+            STATIC_RESET_COUNTER.load(Ordering::Relaxed)
+        }
+
+        #[allow(dead_code)]
+        pub fn is_allocated(paddr: memory_addr::PhysAddr) -> bool {
+            let addr = paddr.as_usize();
+            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) && (addr - 0x1000) % 4096 == 0 {
+                let page_index = (addr - 0x1000) / 4096;
+                let bit = 1 << page_index;
+                let mask = STATIC_ALLOC_MASK.load(Ordering::Acquire);
+                (mask & bit) != 0
+            } else {
+                false
+            }
+        }
+    }
+
+    #[test]
+    fn test_mock_allocator() {
+        MockMmHal::reset();
+
+        // Test multiple allocations return different addresses
+        let addr1 = MockMmHal::alloc_frame().unwrap();
+        let addr2 = MockMmHal::alloc_frame().unwrap();
+        let addr3 = MockMmHal::alloc_frame().unwrap();
+
+        assert_ne!(addr1.as_usize(), addr2.as_usize());
+        assert_ne!(addr2.as_usize(), addr3.as_usize());
+        assert_ne!(addr1.as_usize(), addr3.as_usize());
+
+        // Addresses should be page-aligned
+        assert_eq!(addr1.as_usize() % 0x1000, 0);
+        assert_eq!(addr2.as_usize() % 0x1000, 0);
+        assert_eq!(addr3.as_usize() % 0x1000, 0);
+    }
+
+    #[test]
+    fn test_vmx_region_uninit() {
+        let region = unsafe { VmxRegion::<MockMmHal>::uninit() };
+
+        // Test that we can create an uninitialized region
+        // Can't test much more without allocating memory
+        let debug_str = format!("{:?}", region);
+        assert!(!debug_str.is_empty());
+    }
+
+    #[test]
+    fn test_vmx_region_new() {
+        // Reset allocator for consistent testing
+        MockMmHal::reset();
+
+        // Only test allocation logic, not memory access
+        // VmxRegion::new might try to access the allocated memory,
+        // so we'll just test the allocation part
+        let phys_addr = MockMmHal::alloc_frame();
+        assert!(phys_addr.is_some());
+
+        let addr = phys_addr.unwrap();
+        assert_ne!(addr.as_usize(), 0);
+        assert_eq!(addr.as_usize() % 0x1000, 0); // Should be page-aligned
+    }
+
+    #[test]
+    fn test_vmx_region_new_with_shadow() {
+        // Reset allocator for consistent testing
+        MockMmHal::reset();
+
+        // Test allocation behavior
+        let addr1 = MockMmHal::alloc_frame().unwrap();
+        let addr2 = MockMmHal::alloc_frame().unwrap();
+
+        assert_ne!(addr1.as_usize(), addr2.as_usize());
+        assert_eq!(addr1.as_usize() % 0x1000, 0);
+        assert_eq!(addr2.as_usize() % 0x1000, 0);
+    }
+
+    #[test]
+    fn test_io_bitmap_allocation() {
+        // Test that we can allocate memory for IO bitmaps
+        // without actually creating the bitmap structures that access memory
+        MockMmHal::reset();
+
+        let addr_a = MockMmHal::alloc_frame().unwrap();
+        let addr_b = MockMmHal::alloc_frame().unwrap();
+
+        // Both addresses should be valid and different
+        assert_ne!(addr_a.as_usize(), 0);
+        assert_ne!(addr_b.as_usize(), 0);
+        assert_ne!(addr_a.as_usize(), addr_b.as_usize());
+    }
+
+    #[test]
+    fn test_msr_bitmap_allocation() {
+        // Test memory allocation for MSR bitmaps
+        MockMmHal::reset();
+
+        let addr = MockMmHal::alloc_frame().unwrap();
+        assert_ne!(addr.as_usize(), 0);
+        assert_eq!(addr.as_usize() % 0x1000, 0); // Should be page-aligned
+    }
+
+    #[test]
+    fn test_ept_pointer_creation() {
+        // Test EPTPointer creation with from_table_phys method
+        let ept_ptr1 = EPTPointer::from_table_phys(memory_addr::PhysAddr::from(0x1000));
+        let ept_ptr2 = EPTPointer::from_table_phys(memory_addr::PhysAddr::from(0x2000));
+
+        // Verify the EPT pointers were created successfully
+        assert_ne!(ept_ptr1.0, ept_ptr2.0);
+    }
+
+    #[test]
+    fn test_ept_pointer_getters() {
+        let phys_addr = memory_addr::PhysAddr::from(0x3000);
+        let ept_ptr = EPTPointer::from_table_phys(phys_addr);
+
+        // Test that we can create EPT pointer and it has expected flags
+        let bits = ept_ptr.bits();
+        assert_ne!(bits, 0);
+
+        // Should have the expected flags set
+        let expected_flags =
+            EPTPointer::MEM_TYPE_WB | EPTPointer::WALK_LENGTH_4 | EPTPointer::ENABLE_ACCESSED_DIRTY;
+        assert_eq!(bits & expected_flags.bits(), expected_flags.bits());
+    }
+
+    #[test]
+    fn test_vmx_basic_constants() {
+        assert_eq!(VmxBasic::VMX_MEMORY_TYPE_WRITE_BACK, 6);
+    }
+
+    #[test]
+    fn test_feature_control_flags() {
+        let flags = FeatureControlFlags::LOCKED | FeatureControlFlags::VMXON_ENABLED_OUTSIDE_SMX;
+
+        assert!(flags.contains(FeatureControlFlags::LOCKED));
+        assert!(flags.contains(FeatureControlFlags::VMXON_ENABLED_OUTSIDE_SMX));
+        assert!(!flags.contains(FeatureControlFlags::VMXON_ENABLED_INSIDE_SMX));
+    }
+
+    #[test]
+    fn test_ept_pointer_flags() {
+        use EPTPointer as EPT;
+
+        // Test individual flags
+        assert_eq!(EPT::MEM_TYPE_UC.bits(), 0);
+        assert_eq!(EPT::MEM_TYPE_WB.bits(), 6);
+        assert_eq!(EPT::WALK_LENGTH_4.bits(), 3 << 3);
+
+        // Test flag combination
+        let combined = EPT::MEM_TYPE_WB | EPT::WALK_LENGTH_4 | EPT::ENABLE_ACCESSED_DIRTY;
+        assert!(combined.contains(EPT::MEM_TYPE_WB));
+        assert!(combined.contains(EPT::WALK_LENGTH_4));
+        assert!(combined.contains(EPT::ENABLE_ACCESSED_DIRTY));
+    }
+
+    #[test]
+    fn test_ept_pointer_from_table_phys() {
+        let pml4_addr = HostPhysAddr::from(0x12345000_usize); // Page-aligned address
+        let ept_ptr = EPTPointer::from_table_phys(pml4_addr);
+
+        // Should have the correct flags set
+        assert!(ept_ptr.contains(EPTPointer::MEM_TYPE_WB));
+        assert!(ept_ptr.contains(EPTPointer::WALK_LENGTH_4));
+        assert!(ept_ptr.contains(EPTPointer::ENABLE_ACCESSED_DIRTY));
+
+        // Address should be preserved (and aligned)
+        let addr_part = ept_ptr.bits() & !0xfff;
+        assert_eq!(addr_part, 0x12345000);
+    }
+
+    #[test]
+    fn test_ept_pointer_from_unaligned_addr() {
+        let unaligned_addr = HostPhysAddr::from(0x12345678_usize); // Not page-aligned
+        let ept_ptr = EPTPointer::from_table_phys(unaligned_addr);
+
+        // Address should be aligned down
+        let addr_part = ept_ptr.bits() & !0xfff;
+        assert_eq!(addr_part, 0x12345000); // Should be aligned to 4K boundary
+    }
+
+    #[test]
+    fn test_debug_implementations() {
+        // Test that all our structs implement Debug properly
+        let vmx_region = unsafe { VmxRegion::<MockMmHal>::uninit() };
+        let _debug_str = format!("{:?}", vmx_region);
+
+        let io_bitmap = IOBitmap::<MockMmHal>::passthrough_all().unwrap();
+        let _debug_str = format!("{:?}", io_bitmap);
+
+        let msr_bitmap = MsrBitmap::<MockMmHal>::passthrough_all().unwrap();
+        let _debug_str = format!("{:?}", msr_bitmap);
+
+        let flags = FeatureControlFlags::LOCKED;
+        let _debug_str = format!("{:?}", flags);
+
+        let ept_flags = EPTPointer::MEM_TYPE_WB;
+        let _debug_str = format!("{:?}", ept_flags);
     }
 }

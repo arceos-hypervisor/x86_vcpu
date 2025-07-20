@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust-toolchain: [nightly-2024-12-25, nightly]
+        rust-toolchain: [nightly-2025-05-20, nightly]
         targets: [x86_64-unknown-none]
     steps:
     - uses: actions/checkout@v4
@@ -28,10 +28,28 @@ jobs:
     - name: Build
       continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
       run: cargo build --target ${{ matrix.targets }} --all-features
+    - name: Check documentation
+      run: cargo doc --target ${{ matrix.targets }} --all-features --no-deps
+      env:
+        RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links -D missing-docs"
+
+  unit_test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust-toolchain: [nightly-2025-05-20, nightly]
+        targets: [x86_64-unknown-linux-gnu]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        toolchain: ${{ matrix.rust-toolchain }}
+        components: rust-src
+    - name: Check rust version
+      run: rustc --version --verbose
     - name: Unit test
-      continue-on-error: ${{ matrix.rust-toolchain == 'nightly' }}
-      if: ${{ matrix.targets == 'x86_64-unknown-linux-gnu' }}
-      run: cargo test --target ${{ matrix.targets }} -- --nocapture
+      run: cargo test --target ${{ matrix.targets }} --all-features -- --nocapture
 
   doc:
     runs-on: ubuntu-latest
