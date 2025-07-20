@@ -64,7 +64,7 @@ jobs:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@nightly
       with:
-        toolchain: nightly-2024-12-25
+        toolchain: nightly-2025-05-20
     - name: Build docs
       continue-on-error: ${{ github.ref != env.default-branch && github.event_name != 'pull_request' }}
       run: |
