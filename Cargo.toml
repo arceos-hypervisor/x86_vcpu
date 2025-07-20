@@ -2,7 +2,14 @@
 name = "x86_vcpu"
 version = "0.1.0"
 edition = "2024"
-authors = ["Mingxian Su <aarkegz@gmail.com>", "Keyang Hu <keyang.hu@qq.com>"]
+authors = [
+    "Mingxian Su <aarkegz@gmail.com>",
+    "Keyang Hu <keyang.hu@qq.com>"
+]
+categories = ["embedded", "no-std"]
+description = "x86 Virtual CPU implementation for the Arceos Hypervisor"
+repository = "https://github.com/arceos-hypervisor/x86_vcpu"
+keywords = ["x86", "vcpu", "hypervisor", "arceos"]
 license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPubL-2.0 OR MulanPSL2"
 
 [dependencies]
