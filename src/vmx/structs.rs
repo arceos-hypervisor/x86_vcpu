@@ -272,149 +272,8 @@ impl EPTPointer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::mock::MockMmHal;
     use alloc::format;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    // Mock HAL for testing with better memory simulation
-    #[derive(Debug)]
-    struct MockMmHal;
-
-    static mut STATIC_MEMORY_POOL: [[u8; 4096]; 16] = [[0; 4096]; 16];
-    static STATIC_ALLOC_MASK: AtomicUsize = AtomicUsize::new(0);
-    static STATIC_RESET_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    impl AxMmHal for MockMmHal {
-        fn alloc_frame() -> Option<memory_addr::PhysAddr> {
-            loop {
-                let current_mask = STATIC_ALLOC_MASK.load(Ordering::Acquire);
-
-                // 找到第一个未分配的页
-                for i in 0..16 {
-                    let bit = 1 << i;
-                    if (current_mask & bit) == 0 {
-                        // 尝试原子性地设置这个位
-                        match STATIC_ALLOC_MASK.compare_exchange_weak(
-                            current_mask,
-                            current_mask | bit,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        ) {
-                            Ok(_) => {
-                                let phys_addr = 0x1000 + (i * 4096);
-                                return Some(memory_addr::PhysAddr::from(phys_addr));
-                            }
-                            Err(_) => {
-                                // CAS失败，继续外层循环重试
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // 如果没有找到可用页面或CAS失败后重新检查
-                let final_mask = STATIC_ALLOC_MASK.load(Ordering::Acquire);
-                if final_mask == 0xFFFF {
-                    // 所有16位都被设置
-                    return None; // 没有可用页面
-                }
-                // 否则继续循环重试
-            }
-        }
-
-        fn dealloc_frame(paddr: memory_addr::PhysAddr) {
-            let addr = paddr.as_usize();
-            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) && (addr - 0x1000) % 4096 == 0 {
-                let page_index = (addr - 0x1000) / 4096;
-                let bit = 1 << page_index;
-                STATIC_ALLOC_MASK.fetch_and(!bit, Ordering::AcqRel);
-            }
-        }
-
-        fn phys_to_virt(paddr: memory_addr::PhysAddr) -> memory_addr::VirtAddr {
-            let addr = paddr.as_usize();
-            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) {
-                let page_index = (addr - 0x1000) / 4096;
-                let offset = (addr - 0x1000) % 4096;
-
-                unsafe {
-                    let page_ptr = STATIC_MEMORY_POOL[page_index].as_ptr();
-                    memory_addr::VirtAddr::from(page_ptr.add(offset) as usize)
-                }
-            } else {
-                // 对于无效地址，返回identity mapping作为fallback
-                memory_addr::VirtAddr::from(addr)
-            }
-        }
-
-        fn virt_to_phys(vaddr: memory_addr::VirtAddr) -> memory_addr::PhysAddr {
-            let pool_start = core::ptr::addr_of!(STATIC_MEMORY_POOL) as *const u8 as usize;
-            let pool_end = pool_start + (16 * 4096);
-
-            if vaddr.as_usize() >= pool_start && vaddr.as_usize() < pool_end {
-                let offset = vaddr.as_usize() - pool_start;
-                memory_addr::PhysAddr::from(0x1000 + offset)
-            } else {
-                // Fallback to identity mapping
-                memory_addr::PhysAddr::from(vaddr.as_usize())
-            }
-        }
-    }
-
-    impl MockMmHal {
-        #[allow(dead_code)]
-        pub fn reset() {
-            STATIC_ALLOC_MASK.store(0, Ordering::Release);
-            STATIC_RESET_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-            unsafe {
-                // 清零所有内存 - 使用 addr_of_mut! 避免创建可变引用
-                let pool_ptr = core::ptr::addr_of_mut!(STATIC_MEMORY_POOL);
-                core::ptr::write_bytes(pool_ptr, 0, 1);
-            }
-        }
-
-        #[allow(dead_code)]
-        pub fn allocated_count() -> usize {
-            STATIC_ALLOC_MASK.load(Ordering::Acquire).count_ones() as usize
-        }
-
-        #[allow(dead_code)]
-        pub fn reset_counter() -> usize {
-            STATIC_RESET_COUNTER.load(Ordering::Relaxed)
-        }
-
-        #[allow(dead_code)]
-        pub fn is_allocated(paddr: memory_addr::PhysAddr) -> bool {
-            let addr = paddr.as_usize();
-            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) && (addr - 0x1000) % 4096 == 0 {
-                let page_index = (addr - 0x1000) / 4096;
-                let bit = 1 << page_index;
-                let mask = STATIC_ALLOC_MASK.load(Ordering::Acquire);
-                (mask & bit) != 0
-            } else {
-                false
-            }
-        }
-    }
-
-    #[test]
-    fn test_mock_allocator() {
-        MockMmHal::reset();
-
-        // Test multiple allocations return different addresses
-        let addr1 = MockMmHal::alloc_frame().unwrap();
-        let addr2 = MockMmHal::alloc_frame().unwrap();
-        let addr3 = MockMmHal::alloc_frame().unwrap();
-
-        assert_ne!(addr1.as_usize(), addr2.as_usize());
-        assert_ne!(addr2.as_usize(), addr3.as_usize());
-        assert_ne!(addr1.as_usize(), addr3.as_usize());
-
-        // Addresses should be page-aligned
-        assert_eq!(addr1.as_usize() % 0x1000, 0);
-        assert_eq!(addr2.as_usize() % 0x1000, 0);
-        assert_eq!(addr3.as_usize() % 0x1000, 0);
-    }
 
     #[test]
     fn test_vmx_region_uninit() {
@@ -431,15 +290,15 @@ mod tests {
         // Reset allocator for consistent testing
         MockMmHal::reset();
 
-        // Only test allocation logic, not memory access
-        // VmxRegion::new might try to access the allocated memory,
-        // so we'll just test the allocation part
-        let phys_addr = MockMmHal::alloc_frame();
-        assert!(phys_addr.is_some());
+        // Test VmxRegion::new with valid parameters
+        let region = VmxRegion::<MockMmHal>::new(0x12345, false);
+        assert!(region.is_ok());
 
-        let addr = phys_addr.unwrap();
+        let region = region.unwrap();
+        let addr = region.phys_addr();
         assert_ne!(addr.as_usize(), 0);
-        assert_eq!(addr.as_usize() % 0x1000, 0); // Should be page-aligned
+        // Should be page-aligned
+        assert_eq!(addr.as_usize() % 0x1000, 0);
     }
 
     #[test]
@@ -447,38 +306,66 @@ mod tests {
         // Reset allocator for consistent testing
         MockMmHal::reset();
 
-        // Test allocation behavior
-        let addr1 = MockMmHal::alloc_frame().unwrap();
-        let addr2 = MockMmHal::alloc_frame().unwrap();
+        // Test VmxRegion::new with different shadow indicator values
+        let region_no_shadow = VmxRegion::<MockMmHal>::new(0x12345, false);
+        assert!(region_no_shadow.is_ok());
 
+        let region_with_shadow = VmxRegion::<MockMmHal>::new(0x12345, true);
+        assert!(region_with_shadow.is_ok());
+
+        // Test that both regions have valid physical addresses
+        let region1 = region_no_shadow.unwrap();
+        let region2 = region_with_shadow.unwrap();
+
+        let addr1 = region1.phys_addr();
+        let addr2 = region2.phys_addr();
+
+        assert_ne!(addr1.as_usize(), 0);
+        assert_ne!(addr2.as_usize(), 0);
         assert_ne!(addr1.as_usize(), addr2.as_usize());
         assert_eq!(addr1.as_usize() % 0x1000, 0);
         assert_eq!(addr2.as_usize() % 0x1000, 0);
     }
 
     #[test]
-    fn test_io_bitmap_allocation() {
-        // Test that we can allocate memory for IO bitmaps
-        // without actually creating the bitmap structures that access memory
+    fn test_io_bitmap_creation() {
+        // Test IOBitmap creation methods
         MockMmHal::reset();
 
-        let addr_a = MockMmHal::alloc_frame().unwrap();
-        let addr_b = MockMmHal::alloc_frame().unwrap();
+        // Test passthrough_all creation
+        let passthrough_bitmap = IOBitmap::<MockMmHal>::passthrough_all();
+        assert!(passthrough_bitmap.is_ok());
 
-        // Both addresses should be valid and different
+        // Test intercept_all creation
+        let intercept_bitmap = IOBitmap::<MockMmHal>::intercept_all();
+        assert!(intercept_bitmap.is_ok());
+
+        // Test that phys_addr returns valid addresses
+        let bitmap = passthrough_bitmap.unwrap();
+        let (addr_a, addr_b) = bitmap.phys_addr();
         assert_ne!(addr_a.as_usize(), 0);
         assert_ne!(addr_b.as_usize(), 0);
         assert_ne!(addr_a.as_usize(), addr_b.as_usize());
     }
 
     #[test]
-    fn test_msr_bitmap_allocation() {
-        // Test memory allocation for MSR bitmaps
+    fn test_msr_bitmap_creation() {
+        // Test MsrBitmap creation methods
         MockMmHal::reset();
 
-        let addr = MockMmHal::alloc_frame().unwrap();
+        // Test passthrough_all creation
+        let passthrough_bitmap = MsrBitmap::<MockMmHal>::passthrough_all();
+        assert!(passthrough_bitmap.is_ok());
+
+        // Test intercept_all creation
+        let intercept_bitmap = MsrBitmap::<MockMmHal>::intercept_all();
+        assert!(intercept_bitmap.is_ok());
+
+        // Test that phys_addr returns valid addresses
+        let bitmap = passthrough_bitmap.unwrap();
+        let addr = bitmap.phys_addr();
         assert_ne!(addr.as_usize(), 0);
-        assert_eq!(addr.as_usize() % 0x1000, 0); // Should be page-aligned
+        assert_eq!(addr.as_usize() % 0x1000, 0);
     }
 
     #[test]
@@ -558,7 +445,8 @@ mod tests {
 
         // Address should be aligned down
         let addr_part = ept_ptr.bits() & !0xfff;
-        assert_eq!(addr_part, 0x12345000); // Should be aligned to 4K boundary
+        // Should be aligned to 4K boundary
+        assert_eq!(addr_part, 0x12345000);
     }
 
     #[test]

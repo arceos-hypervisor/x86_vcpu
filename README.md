@@ -5,12 +5,12 @@
 Definition of the vCPU structure and virtualization-related interface support for x86_64 architecture.
 
 The crate user must implement the `AxVCpuHal` trait to provide the required low-level implementantion, 
-relevant implementation can refer to [axvcpu](https://github.com/arceos-hypervisor/axvcpu/blob/main/src/hal.rs). **[work in ]
+relevant implementation can refer to [axvcpu](https://github.com/arceos-hypervisor/axvcpu/blob/main/src/hal.rs). **[Work in Progress]**
 
 ## Features
 
 - **VMX Support**: Complete Intel VT-x virtualization support
-- **AMD-V Support**: AMD virtualization technology support (feature flag `amd`)
+- **SVM Support**: AMD SVM (Secure Virtual Machine) virtualization support (feature flag `svm`)
 - **Register Management**: Comprehensive x86 register state management
 - **EPT (Extended Page Tables)**: Memory virtualization support
 - **MSR Handling**: Model-Specific Register access and management
@@ -81,7 +81,7 @@ The library supports the following Cargo features:
 
 - **`default`**: Enables VMX support by default
 - **`vmx`**: Intel VMX (VT-x) support
-- **`amd`**: AMD-V support
+- **`svm`**: AMD SVM support
 - **`tracing`**: Enable tracing for debugging
 
 ## Related Projects 

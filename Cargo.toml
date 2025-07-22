@@ -34,8 +34,10 @@ x86_vlapic = { git = "https://github.com/arceos-hypervisor/x86_vlapic.git" }
 axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git" }
 axvisor_api = { git = "https://github.com/arceos-hypervisor/axvisor_api.git" }
 
+spin = { version = "0.9", default-features = false }
+
 [features]
 default = ["vmx"]
 tracing = []
 vmx = []
-amd = []
+svm = []
