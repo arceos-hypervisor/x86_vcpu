@@ -34,8 +34,6 @@ use super::vmcs::{
 };
 use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
-use paste::paste;
-
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
 const QEMU_EXIT_PORT: u16 = 0x604;
@@ -628,7 +626,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                 use VmcsGuest16::*;
                 use VmcsGuest32::*;
                 use VmcsGuestNW::*;
-                paste! {
+                paste::paste! {
                     [<$seg _SELECTOR>].write(0)?;
                     [<$seg _BASE>].write(0)?;
                     [<$seg _LIMIT>].write(0xffff)?;
@@ -1455,135 +1453,6 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
 mod tests {
     use super::*;
     use alloc::format;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    // Mock HAL for testing
-    #[derive(Debug)]
-    struct MockMmHal;
-
-    static mut STATIC_MEMORY_POOL: [[u8; 4096]; 16] = [[0; 4096]; 16];
-    static STATIC_ALLOC_MASK: AtomicUsize = AtomicUsize::new(0);
-    static STATIC_RESET_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    impl axaddrspace::AxMmHal for MockMmHal {
-        fn alloc_frame() -> Option<memory_addr::PhysAddr> {
-            loop {
-                let current_mask = STATIC_ALLOC_MASK.load(Ordering::Acquire);
-                for i in 0..16 {
-                    let bit = 1 << i;
-                    if (current_mask & bit) == 0 {
-                        match STATIC_ALLOC_MASK.compare_exchange_weak(
-                            current_mask,
-                            current_mask | bit,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        ) {
-                            Ok(_) => {
-                                let phys_addr = 0x1000 + (i * 4096);
-                                return Some(memory_addr::PhysAddr::from(phys_addr));
-                            }
-                            Err(_) => {
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                let final_mask = STATIC_ALLOC_MASK.load(Ordering::Acquire);
-                if final_mask == 0xFFFF {
-                    return None;
-                }
-            }
-        }
-
-        fn dealloc_frame(paddr: memory_addr::PhysAddr) {
-            let addr = paddr.as_usize();
-            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) && (addr - 0x1000) % 4096 == 0 {
-                let page_index = (addr - 0x1000) / 4096;
-                let bit = 1 << page_index;
-                STATIC_ALLOC_MASK.fetch_and(!bit, Ordering::AcqRel);
-            }
-        }
-
-        fn phys_to_virt(paddr: memory_addr::PhysAddr) -> memory_addr::VirtAddr {
-            let addr = paddr.as_usize();
-            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) {
-                let page_index = (addr - 0x1000) / 4096;
-                let offset = (addr - 0x1000) % 4096;
-
-                unsafe {
-                    let page_ptr = STATIC_MEMORY_POOL[page_index].as_ptr();
-                    memory_addr::VirtAddr::from(page_ptr.add(offset) as usize)
-                }
-            } else {
-                // 对于无效地址，返回identity mapping作为fallback
-                memory_addr::VirtAddr::from(addr)
-            }
-        }
-
-        fn virt_to_phys(vaddr: memory_addr::VirtAddr) -> memory_addr::PhysAddr {
-            let pool_start = core::ptr::addr_of!(STATIC_MEMORY_POOL) as *const u8 as usize;
-            let pool_end = pool_start + (16 * 4096);
-
-            if vaddr.as_usize() >= pool_start && vaddr.as_usize() < pool_end {
-                let offset = vaddr.as_usize() - pool_start;
-                memory_addr::PhysAddr::from(0x1000 + offset)
-            } else {
-                // Fallback to identity mapping
-                memory_addr::PhysAddr::from(vaddr.as_usize())
-            }
-        }
-    }
-
-    /// 测试辅助函数
-    impl MockMmHal {
-        /// 重置静态内存分配器
-        #[allow(dead_code)]
-        pub fn reset() {
-            STATIC_ALLOC_MASK.store(0, Ordering::Release);
-            STATIC_RESET_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-            unsafe {
-                // 清零所有内存 - 使用 addr_of_mut! 避免创建可变引用
-                let pool_ptr = core::ptr::addr_of_mut!(STATIC_MEMORY_POOL);
-                core::ptr::write_bytes(pool_ptr, 0, 1);
-            }
-        }
-
-        /// 获取已分配页数
-        #[allow(dead_code)]
-        pub fn allocated_count() -> usize {
-            STATIC_ALLOC_MASK.load(Ordering::Acquire).count_ones() as usize
-        }
-
-        /// 获取重置计数器（用于检测测试间是否正确重置）
-        #[allow(dead_code)]
-        pub fn reset_counter() -> usize {
-            STATIC_RESET_COUNTER.load(Ordering::Relaxed)
-        }
-
-        #[allow(dead_code)]
-        pub fn is_allocated(paddr: memory_addr::PhysAddr) -> bool {
-            let addr = paddr.as_usize();
-            if addr >= 0x1000 && addr < 0x1000 + (16 * 4096) && (addr - 0x1000) % 4096 == 0 {
-                let page_index = (addr - 0x1000) / 4096;
-                let bit = 1 << page_index;
-                let mask = STATIC_ALLOC_MASK.load(Ordering::Acquire);
-                (mask & bit) != 0
-            } else {
-                false
-            }
-        }
-    }
-
-    // Mock VCpu HAL for testing
-    #[derive(Debug)]
-    #[allow(dead_code)] // Used in tests that require MockVCpuHal type
-    struct MockVCpuHal;
-
-    impl AxVCpuHal for MockVCpuHal {
-        type MmHal = MockMmHal;
-    }
 
     #[test]
     fn test_vm_cpu_mode_enum() {
