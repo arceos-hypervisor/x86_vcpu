@@ -878,6 +878,7 @@ macro_rules! vmx_entry_with {
     ($instr:literal) => {
         unsafe {
             naked_asm!(
+                ".code64",
                 save_regs_to_stack!(),                  // save host status
                 "mov    [rdi + {host_stack_size}], rsp", // save current RSP to Vcpu::host_stack_top
                 "mov    rsp, rdi",                      // set RSP to guest regs area
@@ -922,6 +923,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     unsafe extern "C" fn vmx_exit(&mut self) -> usize {
         unsafe {
             naked_asm!(
+                ".code64",
                 save_regs_to_stack!(),                  // save guest status, after this, rsp points to the `VmxVcpu`
                 "mov    rsp, [rsp + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
                 restore_regs_from_stack!(),             // restore host status
