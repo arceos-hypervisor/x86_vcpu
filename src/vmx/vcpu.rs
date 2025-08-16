@@ -1103,7 +1103,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         const EAX_FREQUENCY_INFO: u32 = 0x16;
         const LEAF_HYPERVISOR_INFO: u32 = 0x4000_0000;
         const LEAF_HYPERVISOR_FEATURE: u32 = 0x4000_0001;
-        const VENDOR_STR: &[u8; 12] = b"RVMRVMRVMRVM";
+        const VENDOR_STR: &[u8; 12] = b"AXHYPERVISOR";
         let vendor_regs = unsafe { &*(VENDOR_STR.as_ptr() as *const [u32; 3]) };
 
         let regs_clone = self.regs_mut().clone();
