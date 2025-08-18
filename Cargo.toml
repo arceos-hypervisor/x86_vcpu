@@ -6,7 +6,7 @@ authors = [
     "Mingxian Su <aarkegz@gmail.com>",
     "Keyang Hu <keyang.hu@qq.com>"
 ]
-categories = ["virtualization"]
+categories = ["virtualization", "no-std"]
 description = "x86 Virtual CPU implementation for the Arceos Hypervisor"
 repository = "https://github.com/arceos-hypervisor/x86_vcpu"
 keywords = ["x86", "vcpu", "hypervisor", "arceos"]
