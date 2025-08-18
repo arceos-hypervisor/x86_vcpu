@@ -29,12 +29,12 @@ memory_addr = "0.4"
 crate_interface = "0.1"
 
 axaddrspace = "0.1"
-axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu.git" }
-x86_vlapic = { git = "https://github.com/arceos-hypervisor/x86_vlapic.git" }
-axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates.git" }
+axvcpu = "0.1"
+x86_vlapic = "0.1"
+axdevice_base = "0.1"
 axvisor_api = "0.1"
 
-spin = { version = "0.9", default-features = false }
+spin = { version = "0.10", default-features = false }
 
 [features]
 default = ["vmx"]
