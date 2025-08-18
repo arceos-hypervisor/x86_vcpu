@@ -1,0 +1,100 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="x86_vcpu"><title>x86_vcpu - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-0ce1a80b.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="x86_vcpu" data-themes="" data-resource-suffix="" data-rustdoc-version="1.89.0-nightly (60dabef95 2025-05-19)" data-channel="nightly" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../static.files/storage-4e99c027.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-32bb7600.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../x86_vcpu/index.html">x86_<wbr>vcpu</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#x86_vcpu" title="x86_vcpu">x86_vcpu</a><ul><li><a href="#features" title="Features">Features</a></li><li><a href="#architecture" title="Architecture">Architecture</a></li><li><a href="#features-1" title="Features">Features</a></li><li><a href="#related-projects" title="Related Projects">Related Projects</a></li><li><a href="#license" title="License">License</a></li></ul></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><h1>Crate <span>x86_vcpu</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/x86_vcpu/lib.rs.html#1-31">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="x86_vcpu"><a class="doc-anchor" href="#x86_vcpu">§</a>x86_vcpu</h2>
+<p><a href="https://github.com/arceos-hypervisor/x86_vcpu/actions/workflows/ci.yml"><img src="https://github.com/arceos-hypervisor/x86_vcpu/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI" /></a></p>
+<p>Definition of the vCPU structure and virtualization-related interface support for x86_64 architecture.</p>
+<p>The crate user must implement the <code>AxVCpuHal</code> trait to provide the required low-level implementantion,
+relevant implementation can refer to <a href="https://github.com/arceos-hypervisor/axvcpu/blob/main/src/hal.rs">axvcpu</a>. <strong>[Work in Progress]</strong></p>
+<h3 id="features"><a class="doc-anchor" href="#features">§</a>Features</h3>
+<ul>
+<li><strong>VMX Support</strong>: Complete Intel VT-x virtualization support</li>
+<li><strong>SVM Support</strong>: AMD SVM (Secure Virtual Machine) virtualization support (feature flag <code>svm</code>)</li>
+<li><strong>Register Management</strong>: Comprehensive x86 register state management</li>
+<li><strong>EPT (Extended Page Tables)</strong>: Memory virtualization support</li>
+<li><strong>MSR Handling</strong>: Model-Specific Register access and management</li>
+<li><strong>VMCS Management</strong>: Virtual Machine Control Structure operations</li>
+<li><strong>Interrupt Handling</strong>: Virtual interrupt and exception processing</li>
+<li><strong>Tracing Support</strong>: Optional tracing for debugging (feature flag <code>tracing</code>)</li>
+</ul>
+<h3 id="architecture"><a class="doc-anchor" href="#architecture">§</a>Architecture</h3>
+<p>The library is structured into several key modules:</p>
+<h4 id="core-components"><a class="doc-anchor" href="#core-components">§</a>Core Components</h4>
+<ul>
+<li>
+<p><strong><code>vmx/</code></strong>: Intel VMX virtualization implementation</p>
+<ul>
+<li><code>vcpu.rs</code>: Virtual CPU implementation (<a href="src/vmx/vcpu.rs"><code>VmxArchVCpu</code></a>)</li>
+<li><code>vmcs.rs</code>: VMCS (Virtual Machine Control Structure) management</li>
+<li><code>percpu.rs</code>: Per-CPU state management (<a href="src/vmx/percpu.rs"><code>VmxArchPerCpuState</code></a>)</li>
+<li><code>definitions.rs</code>: VMX constants and exit reasons</li>
+<li><code>instructions.rs</code>: VMX instruction wrappers</li>
+<li><code>structs.rs</code>: VMX data structures</li>
+</ul>
+</li>
+<li>
+<p><strong><code>regs/</code></strong>: Register management</p>
+<ul>
+<li><code>accessors.rs</code>: Register access utilities</li>
+<li><code>diff.rs</code>: Register state comparison</li>
+<li><code>mod.rs</code>: General-purpose registers (<a href="src/regs/mod.rs"><code>GeneralRegisters</code></a>)</li>
+</ul>
+</li>
+<li>
+<p><strong><code>ept.rs</code></strong>: Extended Page Tables implementation</p>
+</li>
+<li>
+<p><strong><code>msr.rs</code></strong>: Model-Specific Register handling</p>
+</li>
+</ul>
+<h4 id="key-types"><a class="doc-anchor" href="#key-types">§</a>Key Types</h4>
+<ul>
+<li><a href="src/vmx/vcpu.rs"><code>VmxArchVCpu</code></a>: Main virtual CPU implementation</li>
+<li><a href="src/vmx/percpu.rs"><code>VmxArchPerCpuState</code></a>: Per-CPU virtualization state</li>
+<li><a href="src/regs/mod.rs"><code>GeneralRegisters</code></a>: x86-64 general-purpose registers</li>
+<li><a href="src/vmx/definitions.rs"><code>VmxExitReason</code></a>: VM exit reason enumeration</li>
+<li><a href="src/ept.rs"><code>GuestPageWalkInfo</code></a>: Guest page walk information</li>
+</ul>
+<h4 id="basic-example"><a class="doc-anchor" href="#basic-example">§</a>Basic Example</h4>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>x86_vcpu::{has_hardware_support, GeneralRegisters};
+
+<span class="comment">// Check if VMX is supported on this hardware
+</span><span class="kw">if </span>has_hardware_support() {
+    <span class="macro">println!</span>(<span class="string">"VMX hardware support detected"</span>);
+} <span class="kw">else </span>{
+    <span class="macro">println!</span>(<span class="string">"VMX hardware support not available"</span>);
+}
+
+<span class="comment">// Create and initialize guest registers
+</span><span class="kw">let </span><span class="kw-2">mut </span>regs = GeneralRegisters::default();
+regs.rax = <span class="number">0x1234</span>;
+regs.rbx = <span class="number">0x5678</span>;
+
+<span class="macro">println!</span>(<span class="string">"Guest registers initialized:"</span>);
+<span class="macro">println!</span>(<span class="string">"RAX: {:#x}"</span>, regs.rax);
+<span class="macro">println!</span>(<span class="string">"RBX: {:#x}"</span>, regs.rbx);
+
+<span class="comment">// Display register names
+</span><span class="kw">for </span>(i, name) <span class="kw">in </span>GeneralRegisters::REGISTER_NAMES.iter().enumerate() {
+    <span class="macro">println!</span>(<span class="string">"Register {}: {}"</span>, i, name);
+}</code></pre></div>
+<h3 id="features-1"><a class="doc-anchor" href="#features-1">§</a>Features</h3>
+<p>The library supports the following Cargo features:</p>
+<ul>
+<li><strong><code>default</code></strong>: Enables VMX support by default</li>
+<li><strong><code>vmx</code></strong>: Intel VMX (VT-x) support</li>
+<li><strong><code>svm</code></strong>: AMD SVM support</li>
+<li><strong><code>tracing</code></strong>: Enable tracing for debugging</li>
+</ul>
+<h3 id="related-projects"><a class="doc-anchor" href="#related-projects">§</a>Related Projects</h3>
+<ul>
+<li><a href="https://github.com/arceos-org/arceos">ArceOS</a> - An experimental modular OS (or Unikernel)</li>
+<li><a href="https://github.com/arceos-hypervisor/axvisor">AxVisor</a> - Hypervisor implementation</li>
+</ul>
+<h3 id="license"><a class="doc-anchor" href="#license">§</a>License</h3>
+<p>This project is licensed under multiple licenses. You may choose to use this project under any of the following licenses:</p>
+<ul>
+<li><strong><a href="LICENSE.GPLv3">GPL-3.0-or-later</a></strong> - GNU General Public License v3.0 or later</li>
+<li><strong><a href="LICENSE.Apache2">Apache-2.0</a></strong> - Apache License 2.0</li>
+<li><strong><a href="LICENSE.MulanPubL2">MulanPubL-2.0</a></strong> - Mulan Public License 2.0</li>
+<li><strong><a href="LICENSE.MulanPSL2">MulanPSL2</a></strong> - Mulan Permissive Software License v2</li>
+</ul>
+<p>You may use this software under the terms of any of these licenses at your option.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.GeneralRegisters.html" title="struct x86_vcpu::GeneralRegisters">General<wbr>Registers</a></dt><dd>General-purpose registers for the 64-bit x86 architecture.</dd><dt><a class="struct" href="struct.GuestPageWalkInfo.html" title="struct x86_vcpu::GuestPageWalkInfo">Guest<wbr>Page<wbr>Walk<wbr>Info</a></dt><dd>The information of guest page walk.</dd><dt><a class="struct" href="struct.VmxArchPerCpuState.html" title="struct x86_vcpu::VmxArchPerCpuState">VmxArch<wbr>PerCpu<wbr>State</a></dt><dd>Represents the per-CPU state for Virtual Machine Extensions (VMX).</dd><dt><a class="struct" href="struct.VmxArchVCpu.html" title="struct x86_vcpu::VmxArchVCpu">VmxArchV<wbr>Cpu</a></dt><dd>A virtual CPU within a guest.</dd><dt><a class="struct" href="struct.VmxExitInfo.html" title="struct x86_vcpu::VmxExitInfo">VmxExit<wbr>Info</a></dt><dd>VM-Exit Informations. (SDM Vol. 3C, Section 24.9.1)</dd><dt><a class="struct" href="struct.VmxInterruptInfo.html" title="struct x86_vcpu::VmxInterruptInfo">VmxInterrupt<wbr>Info</a></dt><dd>VM-Entry/VM-Exit Interruption-Information Field. (SDM Vol. 3C, Section 24.8.3, 24.9.2)</dd><dt><a class="struct" href="struct.VmxIoExitInfo.html" title="struct x86_vcpu::VmxIoExitInfo">VmxIo<wbr>Exit<wbr>Info</a></dt><dd>Exit Qualification for I/O Instructions. (SDM Vol. 3C, Section 27.2.1, Table 27-5)</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.VmxExitReason.html" title="enum x86_vcpu::VmxExitReason">VmxExit<wbr>Reason</a></dt><dd>VMX basic exit reasons, as defined in the Intel Software Developer’s Manual (SDM) Vol. 3D, Appendix C.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.has_hardware_support.html" title="fn x86_vcpu::has_hardware_support">has_<wbr>hardware_<wbr>support</a></dt><dd>Return if current platform support virtualization extension.</dd></dl></section></div></main></body></html>
