@@ -58,7 +58,7 @@ impl<H: AxVCpuHal> Drop for PhysFrame<H> {
     fn drop(&mut self) {
         if let Some(start_paddr) = self.start_paddr {
             H::PagingHandler::dealloc_frame(start_paddr);
-            debug!("[AxVM] deallocated PhysFrame({:#x})", start_paddr);
+            trace!("[AxVM] deallocated PhysFrame({:#x})", start_paddr);
         }
     }
 }

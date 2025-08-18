@@ -85,7 +85,7 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
         let vmx_basic = VmxBasic::read();
         if vmx_basic.region_size as usize != PAGE_SIZE {
             // return ax_err!(Unsupported);
-            warn!("vmx_basic.region_size is not 4K {:#x?}", vmx_basic);
+            trace!("vmx_basic.region_size is not 4K {:#x?}", vmx_basic);
         }
         if vmx_basic.mem_type != VmxBasic::VMX_MEMORY_TYPE_WRITE_BACK {
             return ax_err!(Unsupported);
@@ -151,7 +151,7 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
             // Remove VMXE bit in CR4.
             Cr4::update(|cr4| cr4.remove(Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS));
         };
-        info!("[AxVM] succeeded to turn off VMX.");
+        debug!("[AxVM] succeeded to turn off VMX.");
 
         self.vmx_region = unsafe { VmxRegion::uninit() };
         Ok(())
