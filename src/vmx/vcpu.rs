@@ -1493,8 +1493,11 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                         AxVCpuExitReason::Halt
                     }
                     VmxExitReason::INIT => {
-                        warn!("VMX INIT: {:#x?}, just bring down current VM", exit_info);
-                        AxVCpuExitReason::SystemDown
+                        debug!(
+                            "VmxExitReason::INIT: {:#x?}, bringing down this vCPU",
+                            exit_info
+                        );
+                        AxVCpuExitReason::CpuDown { _state: 0 }
                     }
                     VmxExitReason::VMFUNC => {
                         warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
