@@ -27,8 +27,8 @@ use super::definitions::VmxExitReason;
 use super::read_vmcs_revision_id;
 use super::structs::{EptpList, IOBitmap, MsrBitmap, VmxRegion};
 use super::vmcs::{
-    self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
-    VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, exit_qualification,
+    self, VmcsControl16, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32,
+    VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, exit_qualification,
     interrupt_exit_info,
 };
 use crate::LinuxContext;
@@ -476,6 +476,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         }
 
         self.setup_vmcs_control(ept_root, is_guest)?;
+        self.set_vpid(self.id as u16 + 1)?;
         self.unbind_from_current_processor()?;
         Ok(())
     }
@@ -699,6 +700,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             }
         }
 
+        // Enable VPID to speed up `VMFUNC` operation.
+        val |= CpuCtrl2::ENABLE_VPID;
+
         vmcs::set_control(
             VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_PROCBASED_CTLS2,
@@ -767,6 +771,14 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         VmcsControl64::IO_BITMAP_A_ADDR.write(self.io_bitmap.phys_addr().0.as_usize() as _)?;
         VmcsControl64::IO_BITMAP_B_ADDR.write(self.io_bitmap.phys_addr().1.as_usize() as _)?;
         VmcsControl64::MSR_BITMAPS_ADDR.write(self.msr_bitmap.phys_addr().as_usize() as _)?;
+        Ok(())
+    }
+
+    fn set_vpid(&mut self, vpid: u16) -> AxResult {
+        if vpid == 0 || vpid > 0xfffe {
+            return ax_err!(InvalidInput);
+        }
+        VmcsControl16::VPID.write(vpid)?;
         Ok(())
     }
 
