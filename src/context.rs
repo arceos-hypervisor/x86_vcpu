@@ -161,7 +161,7 @@ impl LinuxContext {
     /// The initialized context of the instance's first process.
     /// It is used to initialize the vCPU context for the shim kernel which enters
     /// under Intel's long mode.
-    pub fn construct_guest64(rip: u64, cr3: u64, cr4: Cr4Flags) -> Self {
+    pub fn construct_guest64(rip: u64, cr3: u64, cr4: Cr4Flags, linux: &LinuxContext) -> Self {
         Self {
             rsp: 0,
             rip,
@@ -238,8 +238,8 @@ impl LinuxContext {
             ia32_sysenter_esp: 0,
             ia32_sysenter_eip: 0,
             kernel_gsbase: 0,
-            pat: 0,
-            mtrr_def_type: 0,
+            pat: linux.pat,                     // Reuse PAT value provided by Linux.
+            mtrr_def_type: linux.mtrr_def_type, // Reuse MTRR value provided by Linux.
         }
     }
 
