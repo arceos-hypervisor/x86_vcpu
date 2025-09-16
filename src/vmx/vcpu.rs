@@ -378,7 +378,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         let mut formattor = IntelFormatter::new();
         formattor.format(&instr, &mut output);
 
-        debug!("Decoded instruction @Intel formatter: {}", output);
+        warn!("Decoded instruction @Intel formatter: {}", output);
         Ok(())
     }
 }
@@ -1046,7 +1046,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
     fn handle_exception_nmi(&mut self, exit_info: &VmxExitInfo) -> AxResult {
         let intr_info = interrupt_exit_info()?;
-        info!(
+        warn!(
             "VM exit: Exception or NMI @ RIP({:#x}, {}): {:#x?}",
             exit_info.guest_rip, exit_info.exit_instruction_length, intr_info
         );
@@ -1063,7 +1063,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             NON_MASKABLE_INTERRUPT => unsafe {
                 core::arch::asm!("int {}", const NON_MASKABLE_INTERRUPT)
             },
-            v => panic!("Unhandled Guest Exception: #{:#x}", v),
+            v => {
+                warn!("Unhandled Guest Exception: #{:#x}, inject to user", v);
+                self.queue_event(v, intr_info.err_code);
+            }
         }
         Ok(())
     }
