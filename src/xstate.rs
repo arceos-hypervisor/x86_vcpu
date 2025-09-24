@@ -6,7 +6,7 @@ use crate::msr::Msr;
 
 #[allow(unused)]
 pub struct XState {
-    host_xcr0: u64,
+    pub(crate) host_xcr0: u64,
     pub(crate) guest_xcr0: u64,
     host_xss: u64,
     guest_xss: u64,

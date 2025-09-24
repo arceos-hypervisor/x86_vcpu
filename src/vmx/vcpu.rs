@@ -74,6 +74,8 @@ pub struct VmxVcpu<H: AxVCpuHal> {
     ept_root: Option<HostPhysAddr>,
 
     id: usize,
+
+    is_host: bool,
 }
 
 impl<H: AxVCpuHal> VmxVcpu<H> {
@@ -92,6 +94,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             entry: None,
             ept_root: None,
             id,
+            is_host: false,
         };
         debug!("[HV] created VmxVcpu(vmcs: {:#x})", vcpu.vmcs.phys_addr(),);
         Ok(vcpu)
@@ -1222,17 +1225,26 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                     if x.contains(Xcr0::XCR0_OPMASK_STATE)
                         || x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
                         || x.contains(Xcr0::XCR0_HI16_ZMM_STATE)
-                        || !x.contains(Xcr0::XCR0_AVX_STATE)
-                        || !x.contains(Xcr0::XCR0_OPMASK_STATE)
-                        || !x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
-                        || !x.contains(Xcr0::XCR0_HI16_ZMM_STATE)
                     {
-                        return None;
+                        if !x.contains(Xcr0::XCR0_AVX_STATE)
+                            || !x.contains(Xcr0::XCR0_OPMASK_STATE)
+                            || !x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
+                            || !x.contains(Xcr0::XCR0_HI16_ZMM_STATE)
+                        {
+                            return None;
+                        }
                     }
 
                     Some(x)
                 })
-                .ok_or(ax_err_type!(InvalidInput))
+                .ok_or_else(|| {
+                    error!(
+                        "Guest tried to set invalid XCR0: {:#x} {:?}",
+                        value,
+                        Xcr0::from_bits(value)
+                    );
+                    ax_err_type!(InvalidInput)
+                })
                 .and_then(|x| {
                     self.xstate.guest_xcr0 = x.bits();
                     self.advance_rip(VM_EXIT_INSTR_LEN_XSETBV)
@@ -1249,7 +1261,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     /// This function is generally called before VM-entry.
     fn load_guest_xstate(&mut self) {
         // FIXME: Linux will throw a UD exception if we save/restore xstate.
-        // self.xstate.switch_to_guest();
+        if !self.is_host {
+            self.xstate.switch_to_guest();
+        }
     }
 
     /// Save the current guest state to the vcpu,
@@ -1257,7 +1271,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     ///
     /// This function is generally called after VM-exit.
     fn load_host_xstate(&mut self) {
-        // self.xstate.switch_to_host();
+        if !self.is_host {
+            self.xstate.switch_to_host();
+        }
     }
 }
 
@@ -1396,10 +1412,12 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     }
 
     fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
+        self.is_host = false;
         self.setup_vmcs(self.ept_root.unwrap(), self.entry, None)
     }
 
     fn setup_from_context(&mut self, ctx: Self::HostContext) -> AxResult {
+        self.is_host = true;
         self.guest_regs.load_from_context(&ctx);
         self.setup_vmcs(self.ept_root.unwrap(), None, Some(ctx))
     }

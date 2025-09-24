@@ -16,6 +16,8 @@ use crate::xstate::XState;
 /// when operating in VMX mode, including the VMCS revision identifier and
 /// the VMX region.
 pub struct VmxPerCpuState<H: AxVCpuHal> {
+    _pcpuid: usize,
+
     /// The VMCS (Virtual Machine Control Structure) revision identifier.
     ///
     /// This identifier is used to ensure compatibility between the software
@@ -30,8 +32,9 @@ pub struct VmxPerCpuState<H: AxVCpuHal> {
 }
 
 impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
-    fn new(_cpu_id: usize) -> AxResult<Self> {
+    fn new(cpu_id: usize) -> AxResult<Self> {
         Ok(Self {
+            _pcpuid: cpu_id,
             vmcs_revision_id: 0,
             vmx_region: unsafe { VmxRegion::uninit() },
         })
