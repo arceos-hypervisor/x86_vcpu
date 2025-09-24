@@ -770,6 +770,13 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         self.setup_io_bitmap()?;
 
+        if is_guest {
+            // Intercept access to PCI config space (0xcf8-0xcff) for guest VMs.
+            const PCI_RANGE: core::ops::Range<u32> = 0xcf8..0xcff;
+            self.io_bitmap
+                .set_intercept_of_range(PCI_RANGE.start, PCI_RANGE.count() as u32, true);
+        }
+
         VmcsControl32::EXCEPTION_BITMAP.write(exception_bitmap)?;
         VmcsControl64::IO_BITMAP_A_ADDR.write(self.io_bitmap.phys_addr().0.as_usize() as _)?;
         VmcsControl64::IO_BITMAP_B_ADDR.write(self.io_bitmap.phys_addr().1.as_usize() as _)?;
