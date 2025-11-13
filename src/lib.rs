@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(doc_cfg)]
+#![cfg(target_arch = "x86_64")]
 #![doc = include_str!("../README.md")]
 
 #[macro_use]
