@@ -13,6 +13,8 @@ pub use self::percpu::VmxPerCpuState as VmxArchPerCpuState;
 pub use self::vcpu::VmxVcpu as VmxArchVCpu;
 pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
 
+pub use self::vcpu::invalid_ept;
+
 /// Return if current platform support virtualization extension.
 pub fn has_hardware_support() -> bool {
     if let Some(feature) = raw_cpuid::CpuId::new().get_feature_info() {

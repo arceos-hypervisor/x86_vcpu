@@ -482,6 +482,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     }
 
     fn setup_vmcs_host(&self) -> AxResult {
+        // warn!("Host IA32_PAT {:#x}", Msr::IA32_PAT.read());
+        // warn!("Host IA32_EFER {:#x}", Msr::IA32_EFER.read());
+
         VmcsHost64::IA32_PAT.write(Msr::IA32_PAT.read())?;
         VmcsHost64::IA32_EFER.write(Msr::IA32_EFER.read())?;
 
@@ -1634,4 +1637,9 @@ impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
     fn dump(&self) {
         warn!("Dumping VmxVcpu {:#x?}", self);
     }
+}
+
+pub fn invalid_ept(eptp: EPTPointer) -> AxResult<()> {
+    use super::instructions::{InvEptType, invept};
+    unsafe { invept(InvEptType::SingleContext, eptp.bits()).map_err(as_axerr) }
 }

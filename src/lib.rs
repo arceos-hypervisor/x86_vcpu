@@ -26,6 +26,7 @@ cfg_if::cfg_if! {
         mod vmx;
         use vmx as vender;
         pub use vmx::{VmxExitInfo, VmxExitReason, VmxInterruptInfo, VmxIoExitInfo};
+        pub use vmx::invalid_ept;
 
         pub use vender::VmxArchVCpu;
         pub use vender::VmxArchPerCpuState;
