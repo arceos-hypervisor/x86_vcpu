@@ -22,7 +22,6 @@ use axaddrspace::{
 use axdevice_base::BaseDeviceOps;
 use axerrno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
-use axvisor_api::vmm::{VCpuId, VMId};
 
 use super::VmxExitInfo;
 use super::as_axerr;
@@ -32,12 +31,15 @@ use super::vmcs::{
     self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
     VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
+use crate::{Hal, ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
+
+pub type VCpuId = usize;
+pub type VMId = usize;
 
 pub struct XState {
     host_xcr0: u64,
@@ -153,7 +155,7 @@ const CR0_PE: usize = 1 << 0;
 
 /// A virtual CPU within a guest.
 #[repr(C)]
-pub struct VmxVcpu<H: AxVCpuHal> {
+pub struct VmxVcpu<H: Hal> {
     // The order of `guest_regs` and `host_stack_top` is mandatory. They must be the first two fields. If you want to
     // change the order or the type of these fields, you must also change the assembly in this file.
     /// Guest general-purpose registers.
@@ -175,11 +177,11 @@ pub struct VmxVcpu<H: AxVCpuHal> {
 
     // VMCS-related fields
     /// The VMCS region.
-    vmcs: VmxRegion<H::MmHal>,
+    vmcs: VmxRegion<H>,
     /// The I/O bitmap for the VMCS.
-    io_bitmap: IOBitmap<H::MmHal>,
+    io_bitmap: IOBitmap<H>,
     /// The MSR bitmap for the VMCS.
-    msr_bitmap: MsrBitmap<H::MmHal>,
+    msr_bitmap: MsrBitmap<H>,
 
     // Interrupt-related fields
     /// Pending events to be injected to the guest.

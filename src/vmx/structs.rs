@@ -3,14 +3,17 @@ use bitflags::bitflags;
 
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
-use axaddrspace::{AxMmHal, HostPhysAddr, PhysFrame};
 use axerrno::AxResult;
 
-use crate::msr::{Msr, MsrReadWrite};
+use crate::{
+    Hal, HostPhysAddr,
+    mem::PhysFrame,
+    msr::{Msr, MsrReadWrite},
+};
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
 #[derive(Debug)]
-pub struct VmxRegion<H: AxMmHal> {
+pub struct VmxRegion<H: Hal> {
     frame: PhysFrame<H>,
 }
 
