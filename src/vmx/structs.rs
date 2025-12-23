@@ -3,7 +3,7 @@ use bitflags::bitflags;
 
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
-use axerrno::AxResult;
+use crate::Result;
 
 use crate::{
     Hal, HostPhysAddr,
@@ -17,14 +17,14 @@ pub struct VmxRegion<H: Hal> {
     frame: PhysFrame<H>,
 }
 
-impl<H: AxMmHal> VmxRegion<H> {
+impl<H: Hal> VmxRegion<H> {
     pub const unsafe fn uninit() -> Self {
         Self {
             frame: unsafe { PhysFrame::uninit() },
         }
     }
 
-    pub fn new(revision_id: u32, shadow_indicator: bool) -> AxResult<Self> {
+    pub fn new(revision_id: u32, shadow_indicator: bool) -> Result<Self> {
         let frame = PhysFrame::alloc_zero()?;
         unsafe {
             (*(frame.as_mut_ptr() as *mut u32))
@@ -44,13 +44,13 @@ impl<H: AxMmHal> VmxRegion<H> {
 // I/O bitmap A contains one bit for each I/O port in the range 0000H through 7FFFH;
 // I/O bitmap B contains bits for ports in the range 8000H through FFFFH.
 #[derive(Debug)]
-pub struct IOBitmap<H: AxMmHal> {
+pub struct IOBitmap<H: Hal> {
     io_bitmap_a_frame: PhysFrame<H>,
     io_bitmap_b_frame: PhysFrame<H>,
 }
 
-impl<H: AxMmHal> IOBitmap<H> {
-    pub fn passthrough_all() -> AxResult<Self> {
+impl<H: Hal> IOBitmap<H> {
+    pub fn passthrough_all() -> Result<Self> {
         Ok(Self {
             io_bitmap_a_frame: PhysFrame::alloc_zero()?,
             io_bitmap_b_frame: PhysFrame::alloc_zero()?,
@@ -58,7 +58,7 @@ impl<H: AxMmHal> IOBitmap<H> {
     }
 
     #[allow(unused)]
-    pub fn intercept_all() -> AxResult<Self> {
+    pub fn intercept_all() -> Result<Self> {
         let mut io_bitmap_a_frame = PhysFrame::alloc()?;
         io_bitmap_a_frame.fill(u8::MAX);
         let mut io_bitmap_b_frame = PhysFrame::alloc()?;
@@ -104,19 +104,19 @@ impl<H: AxMmHal> IOBitmap<H> {
 }
 
 #[derive(Debug)]
-pub struct MsrBitmap<H: AxMmHal> {
+pub struct MsrBitmap<H: Hal> {
     frame: PhysFrame<H>,
 }
 
-impl<H: AxMmHal> MsrBitmap<H> {
-    pub fn passthrough_all() -> AxResult<Self> {
+impl<H: Hal> MsrBitmap<H> {
+    pub fn passthrough_all() -> Result<Self> {
         Ok(Self {
             frame: PhysFrame::alloc_zero()?,
         })
     }
 
     #[allow(unused)]
-    pub fn intercept_all() -> AxResult<Self> {
+    pub fn intercept_all() -> Result<Self> {
         let mut frame = PhysFrame::alloc()?;
         frame.fill(u8::MAX);
         Ok(Self { frame })
@@ -266,7 +266,7 @@ bitflags! {
 
 impl EPTPointer {
     pub fn from_table_phys(pml4_paddr: HostPhysAddr) -> Self {
-        let aligned_addr = pml4_paddr.as_usize() & !(PAGE_SIZE - 1);
+        let aligned_addr = pml4_paddr & !(PAGE_SIZE - 1);
         let flags = Self::from_bits_retain(aligned_addr as u64);
         flags | Self::MEM_TYPE_WB | Self::WALK_LENGTH_4 | Self::ENABLE_ACCESSED_DIRTY
     }
@@ -299,9 +299,9 @@ mod tests {
 
         let region = region.unwrap();
         let addr = region.phys_addr();
-        assert_ne!(addr.as_usize(), 0);
+        assert_ne!(addr, 0);
         // Should be page-aligned
-        assert_eq!(addr.as_usize() % 0x1000, 0);
+        assert_eq!(addr % 0x1000, 0);
     }
 
     #[test]
@@ -323,11 +323,11 @@ mod tests {
         let addr1 = region1.phys_addr();
         let addr2 = region2.phys_addr();
 
-        assert_ne!(addr1.as_usize(), 0);
-        assert_ne!(addr2.as_usize(), 0);
-        assert_ne!(addr1.as_usize(), addr2.as_usize());
-        assert_eq!(addr1.as_usize() % 0x1000, 0);
-        assert_eq!(addr2.as_usize() % 0x1000, 0);
+        assert_ne!(addr1, 0);
+        assert_ne!(addr2, 0);
+        assert_ne!(addr1, addr2);
+        assert_eq!(addr1 % 0x1000, 0);
+        assert_eq!(addr2 % 0x1000, 0);
     }
 
     #[test]
@@ -346,9 +346,9 @@ mod tests {
         // Test that phys_addr returns valid addresses
         let bitmap = passthrough_bitmap.unwrap();
         let (addr_a, addr_b) = bitmap.phys_addr();
-        assert_ne!(addr_a.as_usize(), 0);
-        assert_ne!(addr_b.as_usize(), 0);
-        assert_ne!(addr_a.as_usize(), addr_b.as_usize());
+        assert_ne!(addr_a, 0);
+        assert_ne!(addr_b, 0);
+        assert_ne!(addr_a, addr_b);
     }
 
     #[test]
@@ -367,8 +367,8 @@ mod tests {
         // Test that phys_addr returns valid addresses
         let bitmap = passthrough_bitmap.unwrap();
         let addr = bitmap.phys_addr();
-        assert_ne!(addr.as_usize(), 0);
-        assert_eq!(addr.as_usize() % 0x1000, 0);
+        assert_ne!(addr, 0);
+        assert_eq!(addr % 0x1000, 0);
     }
 
     #[test]

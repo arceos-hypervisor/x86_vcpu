@@ -54,7 +54,7 @@ impl From<u32> for VmxInstructionError {
 }
 
 impl Debug for VmxInstructionError {
-    fn fmt(&self, f: &mut Formatter) -> Result {
+    fn fmt(&self, f: &mut Formatter) -> core::fmt::Result {
         write!(f, "VmxInstructionError({}, {:?})", self.0, self.as_str())
     }
 }
@@ -69,7 +69,7 @@ numeric_enum_macro::numeric_enum! {
 /// the execution of a virtual machine in VMX (Virtual Machine Extensions) mode.
 /// Each variant corresponds to a specific exit reason that can be identified
 /// and handled by the hypervisor.
-pub enum VmxExitReason {
+pub enum VmxRawExitReason {
     /// Exception or non-maskable interrupt (NMI) occurred.
     EXCEPTION_NMI = 0,
     /// An external interrupt was received.

@@ -3,15 +3,16 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::upper_case_acronyms)]
 
+use alloc::format;
 use bit_field::BitField;
 use x86::bits64::vmx;
 
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
-use axerrno::{AxResult, ax_err};
 use page_table_entry::MappingFlags;
 
 use super::as_axerr;
-use super::definitions::{VmxExitReason, VmxInstructionError, VmxInterruptionType};
+use super::definitions::{VmxRawExitReason, VmxInstructionError, VmxInterruptionType};
+use crate::{Result, VmxError};
 use crate::msr::Msr;
 
 // HYGIENE: These macros are only used in this file, so we can use `as_axerr` directly.
@@ -19,7 +20,7 @@ use crate::msr::Msr;
 macro_rules! vmcs_read {
     ($field_enum: ident, u64) => {
         impl $field_enum {
-            pub fn read(self) -> AxResult<u64> {
+            pub fn read(self) -> Result<u64> {
                 #[cfg(target_pointer_width = "64")]
                 unsafe {
                     vmx::vmread(self as u32).map_err(as_axerr)
@@ -35,7 +36,7 @@ macro_rules! vmcs_read {
     };
     ($field_enum: ident, $ux: ty) => {
         impl $field_enum {
-            pub fn read(self) -> AxResult<$ux> {
+            pub fn read(self) -> Result<$ux> {
                 unsafe { vmx::vmread(self as u32).map(|v| v as $ux).map_err(as_axerr) }
             }
         }
@@ -45,7 +46,7 @@ macro_rules! vmcs_read {
 macro_rules! vmcs_write {
     ($field_enum: ident, u64) => {
         impl $field_enum {
-            pub fn write(self, value: u64) -> AxResult {
+            pub fn write(self, value: u64) -> Result<()> {
                 #[cfg(target_pointer_width = "64")]
                 unsafe {
                     vmx::vmwrite(self as u32, value).map_err(as_axerr)
@@ -62,7 +63,7 @@ macro_rules! vmcs_write {
     };
     ($field_enum: ident, $ux: ty) => {
         impl $field_enum {
-            pub fn write(self, value: $ux) -> AxResult {
+            pub fn write(self, value: $ux) -> Result<()> {
                 unsafe { vmx::vmwrite(self as u32, value as u64).map_err(as_axerr) }
             }
         }
@@ -491,7 +492,7 @@ pub struct VmxExitInfo {
     /// VM-entry failure. (0 = true VM exit; 1 = VM-entry failure)
     pub entry_failure: bool,
     /// Basic exit reason.
-    pub exit_reason: VmxExitReason,
+    pub exit_reason: VmxRawExitReason,
     /// For VM exits resulting from instruction execution, this field receives
     /// the length in bytes of the instruction whose execution led to the VM exit.
     pub exit_instruction_length: u32,
@@ -605,7 +606,7 @@ pub enum ApicAccessExitType {
 impl TryFrom<u8> for ApicAccessExitType {
     type Error = ();
 
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
+    fn try_from(value: u8) -> core::result::Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::LinearDataRead),
             1 => Ok(Self::LinearDataWrite),
@@ -642,7 +643,7 @@ pub fn set_control(
     old_value: u32,
     set: u32,
     clear: u32,
-) -> AxResult {
+) -> Result<()> {
     let cap = capability_msr.read();
     let allowed0 = cap as u32;
     let allowed1 = (cap >> 32) as u32;
@@ -652,24 +653,24 @@ pub fn set_control(
         control, old_value, set, clear
     );
     if (set & clear) != 0 {
-        return ax_err!(
-            InvalidInput,
-            format_args!("can not set and clear the same bit in {:?}", control)
-        );
+        return Err(VmxError::InvalidVmcsConfig(format!(
+            "can not set and clear the same bit in {:?}",
+            control
+        )));
     }
     if (allowed1 & set) != set {
         // failed if set 0-bits in allowed1
-        return ax_err!(
-            Unsupported,
-            format_args!("can not set bits {:#x} in {:?}", set, control)
-        );
+        return Err(VmxError::UnsupportedFeature(format!(
+            "can not set bits {:#x} in {:?}",
+            set, control
+        )));
     }
     if (allowed0 & clear) != 0 {
         // failed if clear 1-bits in allowed0
-        return ax_err!(
-            Unsupported,
-            format_args!("can not clear bits {:#x} in {:?}", clear, control)
-        );
+        return Err(VmxError::UnsupportedFeature(format!(
+            "can not clear bits {:#x} in {:?}",
+            clear, control
+        )));
     }
     // SDM Vol. 3C, Section 31.5.1, Algorithm 3
     let flexible = !allowed0 & allowed1; // therse bits can be either 0 or 1
@@ -680,9 +681,9 @@ pub fn set_control(
     Ok(())
 }
 
-pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> AxResult {
+pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> Result<()> {
     use super::instructions::{InvEptType, invept};
-    let eptp = super::structs::EPTPointer::from_table_phys(pml4_paddr).bits();
+    let eptp = super::structs::EPTPointer::from_table_phys(pml4_paddr.into()).bits();
     VmcsControl64::EPTP.write(eptp)?;
     unsafe { invept(InvEptType::SingleContext, eptp).map_err(as_axerr)? };
     Ok(())
@@ -692,7 +693,7 @@ pub fn instruction_error() -> VmxInstructionError {
     VmcsReadOnly32::VM_INSTRUCTION_ERROR.read().unwrap().into()
 }
 
-pub fn exit_info() -> AxResult<VmxExitInfo> {
+pub fn exit_info() -> Result<VmxExitInfo> {
     let full_reason = VmcsReadOnly32::EXIT_REASON.read()?;
     Ok(VmxExitInfo {
         exit_reason: full_reason
@@ -705,11 +706,11 @@ pub fn exit_info() -> AxResult<VmxExitInfo> {
     })
 }
 
-pub fn raw_interrupt_exit_info() -> AxResult<u32> {
+pub fn raw_interrupt_exit_info() -> Result<u32> {
     VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()
 }
 
-pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
+pub fn interrupt_exit_info() -> Result<VmxInterruptInfo> {
     // SDM Vol. 3C, Section 24.9.2
     let info = VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()?;
     Ok(VmxInterruptInfo {
@@ -724,7 +725,7 @@ pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
     })
 }
 
-pub fn inject_event(vector: u8, err_code: Option<u32>) -> AxResult {
+pub fn inject_event(vector: u8, err_code: Option<u32>) -> Result<()> {
     // SDM Vol. 3C, Section 24.8.3
     let err_code = if VmxInterruptionType::vector_has_error_code(vector) {
         err_code.or_else(|| Some(VmcsReadOnly32::VMEXIT_INTERRUPTION_ERR_CODE.read().unwrap()))
@@ -743,7 +744,7 @@ pub fn inject_event(vector: u8, err_code: Option<u32>) -> AxResult {
     Ok(())
 }
 
-pub fn io_exit_info() -> AxResult<VmxIoExitInfo> {
+pub fn io_exit_info() -> Result<VmxIoExitInfo> {
     // SDM Vol. 3C, Section 27.2.1, Table 27-5
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     Ok(VmxIoExitInfo {
@@ -755,7 +756,7 @@ pub fn io_exit_info() -> AxResult<VmxIoExitInfo> {
     })
 }
 
-pub fn ept_violation_info() -> AxResult<NestedPageFaultInfo> {
+pub fn ept_violation_info() -> Result<NestedPageFaultInfo> {
     // SDM Vol. 3C, Section 27.2.1, Table 27-7
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR.read()? as usize;
@@ -775,7 +776,7 @@ pub fn ept_violation_info() -> AxResult<NestedPageFaultInfo> {
     })
 }
 
-pub fn update_efer() -> AxResult {
+pub fn update_efer() -> Result<()> {
     use x86_64::registers::control::EferFlags;
 
     let efer = VmcsGuest64::IA32_EFER.read()?;
@@ -810,7 +811,7 @@ pub fn update_efer() -> AxResult {
     Ok(())
 }
 
-pub fn cr_access_info() -> AxResult<CrAccessInfo> {
+pub fn cr_access_info() -> Result<CrAccessInfo> {
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     // debug!("cr_access_info qualification {:#x}", qualification);
 
@@ -823,7 +824,7 @@ pub fn cr_access_info() -> AxResult<CrAccessInfo> {
     })
 }
 
-pub fn apic_access_exit_info() -> AxResult<ApicAccessExitInfo> {
+pub fn apic_access_exit_info() -> Result<ApicAccessExitInfo> {
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     // debug!("apic_access_info qualification {:#x}", qualification);
 

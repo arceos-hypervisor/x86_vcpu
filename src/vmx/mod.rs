@@ -6,12 +6,14 @@ mod vcpu;
 mod vmcs;
 
 use self::structs::VmxBasic;
-use axerrno::ax_err_type;
 
-pub use self::definitions::VmxExitReason;
+pub use self::definitions::VmxRawExitReason;
 pub use self::percpu::VmxPerCpuState as VmxArchPerCpuState;
 pub use self::vcpu::VmxVcpu as VmxArchVCpu;
 pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
+
+// 导出自定义错误类型
+pub use crate::{VmxError, Result};
 
 /// Return if current platform support virtualization extension.
 pub fn has_hardware_support() -> bool {
@@ -26,10 +28,12 @@ pub fn read_vmcs_revision_id() -> u32 {
     VmxBasic::read().revision_id
 }
 
-fn as_axerr(err: x86::vmx::VmFail) -> axerrno::AxError {
+fn as_axerr(err: x86::vmx::VmFail) -> VmxError {
     use x86::vmx::VmFail;
     match err {
-        VmFail::VmFailValid => ax_err_type!(BadState, vmcs::instruction_error().as_str()),
-        VmFail::VmFailInvalid => ax_err_type!(BadState, "VMCS pointer is not valid"),
+        VmFail::VmFailValid => {
+            VmxError::VmxInstructionError(alloc::string::String::from(vmcs::instruction_error().as_str()))
+        }
+        VmFail::VmFailInvalid => VmxError::InvalidVmcsPtr,
     }
 }

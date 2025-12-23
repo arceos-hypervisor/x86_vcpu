@@ -1,6 +1,7 @@
 use core::marker::PhantomData;
 
-use crate::{Hal, HostPhysAddr};
+use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
+use crate::{Hal, HostPhysAddr, Result, VmxError};
 
 /// A physical frame which will be automatically deallocated when dropped.
 ///
@@ -14,10 +15,10 @@ pub struct PhysFrame<H: Hal> {
 
 impl<H: Hal> PhysFrame<H> {
     /// Allocate a [`PhysFrame`].
-    pub fn alloc() -> AxResult<Self> {
+    pub fn alloc() -> Result<Self> {
         let start_paddr = H::alloc_frame()
-            .ok_or_else(|| ax_err_type!(NoMemory, "allocate physical frame failed"))?;
-        assert_ne!(start_paddr.as_usize(), 0);
+            .ok_or_else(|| VmxError::MemoryAllocationFailed)?;
+        assert_ne!(start_paddr, 0);
         Ok(Self {
             start_paddr: Some(start_paddr),
             _marker: PhantomData,
@@ -25,7 +26,7 @@ impl<H: Hal> PhysFrame<H> {
     }
 
     /// Allocate a [`PhysFrame`] and fill it with zeros.
-    pub fn alloc_zero() -> AxResult<Self> {
+    pub fn alloc_zero() -> Result<Self> {
         let mut f = Self::alloc()?;
         f.fill(0);
         Ok(f)
@@ -51,7 +52,7 @@ impl<H: Hal> PhysFrame<H> {
 
     /// Get a mutable pointer to the frame.
     pub fn as_mut_ptr(&self) -> *mut u8 {
-        H::phys_to_virt(self.start_paddr()).as_mut_ptr()
+        H::phys_to_virt(self.start_paddr()) as *mut u8
     }
 
     /// Fill the frame with a byte. Works only when the frame is 4 KiB in size.
@@ -60,7 +61,7 @@ impl<H: Hal> PhysFrame<H> {
     }
 }
 
-impl<H: AxMmHal> Drop for PhysFrame<H> {
+impl<H: Hal> Drop for PhysFrame<H> {
     fn drop(&mut self) {
         if let Some(start_paddr) = self.start_paddr {
             H::dealloc_frame(start_paddr);
