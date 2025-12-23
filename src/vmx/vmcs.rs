@@ -11,9 +11,9 @@ use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
 use page_table_entry::MappingFlags;
 
 use super::as_axerr;
-use super::definitions::{VmxRawExitReason, VmxInstructionError, VmxInterruptionType};
-use crate::{Result, VmxError};
+use super::definitions::{VmxInstructionError, VmxInterruptionType, VmxRawExitReason};
 use crate::msr::Msr;
+use crate::{Result, VmxError};
 
 // HYGIENE: These macros are only used in this file, so we can use `as_axerr` directly.
 

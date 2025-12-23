@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
-use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 use crate::{Hal, HostPhysAddr, Result, VmxError};
+use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
 /// A physical frame which will be automatically deallocated when dropped.
 ///
@@ -16,8 +16,7 @@ pub struct PhysFrame<H: Hal> {
 impl<H: Hal> PhysFrame<H> {
     /// Allocate a [`PhysFrame`].
     pub fn alloc() -> Result<Self> {
-        let start_paddr = H::alloc_frame()
-            .ok_or_else(|| VmxError::MemoryAllocationFailed)?;
+        let start_paddr = H::alloc_frame().ok_or_else(|| VmxError::MemoryAllocationFailed)?;
         assert_ne!(start_paddr, 0);
         Ok(Self {
             start_paddr: Some(start_paddr),

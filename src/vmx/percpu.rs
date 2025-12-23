@@ -4,10 +4,10 @@ use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 use alloc::format;
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
-use crate::{Hal, Result, VmxError};
 use crate::msr::Msr;
 use crate::vmx::has_hardware_support;
 use crate::vmx::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion};
+use crate::{Hal, Result, VmxError};
 
 /// Represents the per-CPU state for Virtual Machine Extensions (VMX).
 ///
@@ -43,7 +43,9 @@ impl<H: Hal> VmxPerCpuState<H> {
 
     pub fn hardware_enable(&mut self) -> Result<()> {
         if !has_hardware_support() {
-            return Err(VmxError::UnsupportedFeature("CPU does not support feature VMX".into()));
+            return Err(VmxError::UnsupportedFeature(
+                "CPU does not support feature VMX".into(),
+            ));
         }
         if self.is_enabled() {
             return Err(VmxError::VmxAlreadyEnabled);
@@ -77,28 +79,42 @@ impl<H: Hal> VmxPerCpuState<H> {
             }};
         }
         if !cr_is_valid!(Cr0::read().bits(), CR0) {
-            return Err(VmxError::InvalidVmcsConfig("host CR0 is not valid in VMX operation".into()));
+            return Err(VmxError::InvalidVmcsConfig(
+                "host CR0 is not valid in VMX operation".into(),
+            ));
         }
         if !cr_is_valid!(Cr4::read().bits(), CR4) {
-            return Err(VmxError::InvalidVmcsConfig("host CR4 is not valid in VMX operation".into()));
+            return Err(VmxError::InvalidVmcsConfig(
+                "host CR4 is not valid in VMX operation".into(),
+            ));
         }
 
         // Get VMCS revision identifier in IA32_VMX_BASIC MSR.
         let vmx_basic = VmxBasic::read();
         if vmx_basic.region_size as usize != PAGE_SIZE {
-            return Err(VmxError::UnsupportedFeature("VMX region size is not 4K".into()));
+            return Err(VmxError::UnsupportedFeature(
+                "VMX region size is not 4K".into(),
+            ));
         }
         if vmx_basic.mem_type != VmxBasic::VMX_MEMORY_TYPE_WRITE_BACK {
-            return Err(VmxError::UnsupportedFeature("VMX memory type is not write-back".into()));
+            return Err(VmxError::UnsupportedFeature(
+                "VMX memory type is not write-back".into(),
+            ));
         }
         if vmx_basic.is_32bit_address {
-            return Err(VmxError::UnsupportedFeature("32-bit VMX not supported".into()));
+            return Err(VmxError::UnsupportedFeature(
+                "32-bit VMX not supported".into(),
+            ));
         }
         if !vmx_basic.io_exit_info {
-            return Err(VmxError::UnsupportedFeature("IO exit info not supported".into()));
+            return Err(VmxError::UnsupportedFeature(
+                "IO exit info not supported".into(),
+            ));
         }
         if !vmx_basic.vmx_flex_controls {
-            return Err(VmxError::UnsupportedFeature("VMX flex controls not supported".into()));
+            return Err(VmxError::UnsupportedFeature(
+                "VMX flex controls not supported".into(),
+            ));
         }
         self.vmcs_revision_id = vmx_basic.revision_id;
         self.vmx_region = VmxRegion::new(self.vmcs_revision_id, false)?;

@@ -13,7 +13,7 @@ pub use self::vcpu::VmxVcpu as VmxArchVCpu;
 pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
 
 // 导出自定义错误类型
-pub use crate::{VmxError, Result};
+pub use crate::{Result, VmxError};
 
 /// Return if current platform support virtualization extension.
 pub fn has_hardware_support() -> bool {
@@ -31,9 +31,9 @@ pub fn read_vmcs_revision_id() -> u32 {
 fn as_axerr(err: x86::vmx::VmFail) -> VmxError {
     use x86::vmx::VmFail;
     match err {
-        VmFail::VmFailValid => {
-            VmxError::VmxInstructionError(alloc::string::String::from(vmcs::instruction_error().as_str()))
-        }
+        VmFail::VmFailValid => VmxError::VmxInstructionError(alloc::string::String::from(
+            vmcs::instruction_error().as_str(),
+        )),
         VmFail::VmFailInvalid => VmxError::InvalidVmcsPtr,
     }
 }
