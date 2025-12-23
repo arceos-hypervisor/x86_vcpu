@@ -143,7 +143,7 @@ pub trait Hal {
 // ==================== x86 特定的 VCPU 退出原因定义 ====================
 // 这些类型替代 axvcpu 中的定义，使 x86_vcpu 完全独立
 
-use axaddrspace::{
+pub use axaddrspace::{
     GuestPhysAddr,
     device::{AccessWidth, Port, SysRegAddr},
 };
@@ -156,7 +156,11 @@ pub enum VmxExitReason {
     /// IO 读
     IoRead { port: Port, width: AccessWidth },
     /// IO 写
-    IoWrite { port: Port, width: AccessWidth, data: u32 },
+    IoWrite {
+        port: Port,
+        width: AccessWidth,
+        data: u32,
+    },
     /// 系统寄存器读
     SysRegRead { addr: SysRegAddr, reg: usize },
     /// 系统寄存器写
@@ -164,7 +168,11 @@ pub enum VmxExitReason {
     /// 外部中断
     ExternalInterrupt { vector: usize },
     /// CPU 启动
-    CpuUp { target_cpu: usize, entry_point: GuestPhysAddr, arg: u64 },
+    CpuUp {
+        target_cpu: usize,
+        entry_point: GuestPhysAddr,
+        arg: u64,
+    },
     /// CPU 关闭
     CpuDown { state: usize },
     /// 系统关闭
@@ -172,4 +180,3 @@ pub enum VmxExitReason {
     /// 无操作
     Nothing,
 }
-
