@@ -225,12 +225,6 @@ impl<H: Hal> VmxVcpu<H> {
         Ok(vcpu)
     }
 
-    /// Set the new [`VmxVcpu`] context from guest OS.
-    pub fn setup(&mut self, ept_root: HostPhysAddr, entry: GuestPhysAddr) -> Result<()> {
-        self.setup_vmcs(entry, ept_root)?;
-        Ok(())
-    }
-
     // /// Get the identifier of this [`VmxVcpu`].
     // pub fn vcpu_id(&self) -> usize {
     //     get_current_vcpu::<Self>().unwrap().id()
@@ -610,7 +604,7 @@ impl<H: Hal> VmxVcpu<H> {
         VmcsHostNW::TR_BASE.write(get_tr_base(tr, &gdtp) as _)?;
         VmcsHostNW::GDTR_BASE.write(gdtp.base as _)?;
         VmcsHostNW::IDTR_BASE.write(idtp.base as _)?;
-        VmcsHostNW::RIP.write(Self::vmx_exit as usize)?;
+        VmcsHostNW::RIP.write(Self::vmx_exit as *const () as usize)?;
 
         VmcsHostNW::IA32_SYSENTER_ESP.write(0)?;
         VmcsHostNW::IA32_SYSENTER_EIP.write(0)?;
@@ -1331,11 +1325,6 @@ impl<H: Hal> Debug for VmxVcpu<H> {
 // ==================== 直接在 VmxVcpu<H> 上实现方法，不使用 trait ====================
 
 impl<H: Hal> VmxVcpu<H> {
-    /// 创建新的 VCPU（替代 AxArchVCpu::new）
-    pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> Result<Self> {
-        Self::new(vm_id, vcpu_id)
-    }
-
     /// 设置入口点（替代 AxArchVCpu::set_entry）
     pub fn set_entry(&mut self, entry: GuestPhysAddr) -> Result<()> {
         self.entry = Some(entry);
@@ -1346,11 +1335,6 @@ impl<H: Hal> VmxVcpu<H> {
     pub fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> Result<()> {
         self.ept_root = Some(ept_root);
         Ok(())
-    }
-
-    /// 设置 VMCS（替代 AxArchVCpu::setup）
-    pub fn setup(&mut self) -> Result<()> {
-        self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap())
     }
 
     /// 运行 VCPU（替代 AxArchVCpu::run，返回自己的 VmxExitReason）
