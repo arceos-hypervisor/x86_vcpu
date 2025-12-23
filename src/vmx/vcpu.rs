@@ -30,7 +30,10 @@ use super::vmcs::{
     self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
     VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
-use crate::{Hal, ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters, Result, VmxError, VmxExitReason as X86VmxExitReason};
+use crate::{
+    Hal, Result, VmxError, VmxExitReason as X86VmxExitReason, ept::GuestPageWalkInfo, msr::Msr,
+    regs::GeneralRegisters,
+};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 1_000_000;
 
@@ -1031,7 +1034,8 @@ impl<H: Hal> VmxVcpu<H> {
                 SysRegAddr::new(msr),
                 AccessWidth::Qword,
             )
-            .map_err(|e| VmxError::Other(format!("VLAPIC read error: {:?}", e)))? as u64;
+            .map_err(|e| VmxError::Other(format!("VLAPIC read error: {:?}", e)))?
+                as u64;
 
             trace!("handle_vlapic_msr_read: msr={:#x}, value={:#x}", msr, value);
 
@@ -1051,7 +1055,9 @@ impl<H: Hal> VmxVcpu<H> {
                     "Unsupported APIC access type: {:?}",
                     apic_access_exit_info.access_type
                 );
-                return Err(VmxError::UnsupportedFeature("Unsupported APIC access type".into()));
+                return Err(VmxError::UnsupportedFeature(
+                    "Unsupported APIC access type".into(),
+                ));
             }
         };
 
@@ -1243,7 +1249,9 @@ impl<H: Hal> VmxVcpu<H> {
                 })
         } else {
             // xcr0 only
-            Err(VmxError::UnsupportedFeature("only xcr0 is supported".into()))
+            Err(VmxError::UnsupportedFeature(
+                "only xcr0 is supported".into(),
+            ))
         }
     }
 
@@ -1324,29 +1332,29 @@ impl<H: Hal> Debug for VmxVcpu<H> {
 
 impl<H: Hal> VmxVcpu<H> {
     /// 创建新的 VCPU（替代 AxArchVCpu::new）
-    pub fn new_arch(vm_id: VMId, vcpu_id: VCpuId) -> Result<Self> {
+    pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> Result<Self> {
         Self::new(vm_id, vcpu_id)
     }
 
     /// 设置入口点（替代 AxArchVCpu::set_entry）
-    pub fn set_entry_arch(&mut self, entry: GuestPhysAddr) -> Result<()> {
+    pub fn set_entry(&mut self, entry: GuestPhysAddr) -> Result<()> {
         self.entry = Some(entry);
         Ok(())
     }
 
     /// 设置 EPT 根（替代 AxArchVCpu::set_ept_root）
-    pub fn set_ept_root_arch(&mut self, ept_root: HostPhysAddr) -> Result<()> {
+    pub fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> Result<()> {
         self.ept_root = Some(ept_root);
         Ok(())
     }
 
     /// 设置 VMCS（替代 AxArchVCpu::setup）
-    pub fn setup_arch(&mut self) -> Result<()> {
+    pub fn setup(&mut self) -> Result<()> {
         self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap())
     }
 
     /// 运行 VCPU（替代 AxArchVCpu::run，返回自己的 VmxExitReason）
-    pub fn run_arch(&mut self) -> Result<X86VmxExitReason> {
+    pub fn run(&mut self) -> Result<X86VmxExitReason> {
         match self.inner_run() {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 X86VmxExitReason::SystemDown // 简化处理
@@ -1363,7 +1371,8 @@ impl<H: Hal> VmxVcpu<H> {
                                 self.regs().rcx as usize,
                                 self.regs().r8 as usize,
                                 self.regs().r9 as usize,
-                                0, 0,
+                                0,
+                                0,
                             ],
                         }
                     }
@@ -1417,12 +1426,10 @@ impl<H: Hal> VmxVcpu<H> {
                             vector: int_info.vector as usize,
                         }
                     }
-                    VmxRawExitReason::MSR_READ => {
-                        X86VmxExitReason::SysRegRead {
-                            addr: SysRegAddr::new(self.regs().rcx as _),
-                            reg: 0,
-                        }
-                    }
+                    VmxRawExitReason::MSR_READ => X86VmxExitReason::SysRegRead {
+                        addr: SysRegAddr::new(self.regs().rcx as _),
+                        reg: 0,
+                    },
                     VmxRawExitReason::MSR_WRITE => {
                         let value = (self.regs().rax & 0xffff_ffff)
                             | ((self.regs().rdx & 0xffff_ffff) << 32);
@@ -1442,23 +1449,23 @@ impl<H: Hal> VmxVcpu<H> {
     }
 
     /// 绑定到当前 CPU（替代 AxArchVCpu::bind）
-    pub fn bind_arch(&mut self) -> Result<()> {
+    pub fn bind(&mut self) -> Result<()> {
         self.bind_to_current_processor()
     }
 
     /// 解绑 CPU（替代 AxArchVCpu::unbind）
-    pub fn unbind_arch(&mut self) -> Result<()> {
+    pub fn unbind(&mut self) -> Result<()> {
         self.launched = false;
         self.unbind_from_current_processor()
     }
 
     /// 设置通用寄存器（替代 AxArchVCpu::set_gpr）
-    pub fn set_gpr_arch(&mut self, reg: usize, val: usize) {
+    pub fn set_gpr(&mut self, reg: usize, val: usize) {
         self.regs_mut().set_reg_of_index(reg as u8, val as u64);
     }
 
     /// 注入中断（替代 AxArchVCpu::inject_interrupt）
-    pub fn inject_interrupt_arch(&mut self, vector: usize) -> Result<()> {
+    pub fn inject_interrupt(&mut self, vector: usize) -> Result<()> {
         if vector != 0 {
             warn!("interrupt queued: vector {:#x}", vector);
         } else {
@@ -1469,7 +1476,7 @@ impl<H: Hal> VmxVcpu<H> {
     }
 
     /// 设置返回值（替代 AxArchVCpu::set_return_value）
-    pub fn set_return_value_arch(&mut self, val: usize) {
+    pub fn set_return_value(&mut self, val: usize) {
         self.regs_mut().rax = val as u64;
     }
 }
