@@ -22,6 +22,7 @@ pub fn has_hardware_support() -> bool {
     }
 }
 
+
 pub fn read_vmcs_revision_id() -> u32 {
     VmxBasic::read().revision_id
 }
