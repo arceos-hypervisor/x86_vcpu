@@ -125,6 +125,31 @@ impl<PTE: GenericPTE, H: PagingHandler, EPT: EPTTranslator> GuestPageTable64<PTE
         let off = size.align_offset(vaddr.into());
         Ok((entry.paddr().add(off).into(), entry.flags(), size))
     }
+
+    /// Queries the result of the mapping starts with `vaddr`.
+    ///
+    /// Returns the physical address of the target frame, mapping flags,
+    /// the page size, and the raw page table entry bits.
+    ///
+    /// Returns [`Err(PagingError::NotMapped)`](PagingError::NotMapped) if the
+    /// mapping is not present.
+    pub fn query_raw(
+        &self,
+        vaddr: GuestVirtAddr,
+    ) -> PagingResult<(GuestPhysAddr, MappingFlags, PageSize, usize)> {
+        let (entry, size) = self.get_entry(vaddr)?;
+        if entry.is_unused() {
+            error!("GuestPT64 query {:?} Entry is unused", vaddr);
+            return Err(PagingError::NotMapped);
+        }
+        let off = size.align_offset(vaddr.into());
+        Ok((
+            entry.paddr().add(off).into(),
+            entry.flags(),
+            size,
+            entry.bits(),
+        ))
+    }
 }
 
 // private implements
