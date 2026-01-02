@@ -855,19 +855,31 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         vaddr + seg_base
     }
 
+    /// Query guest page table to get mapping info.
     pub fn guest_page_table_query(
         &self,
         gva: GuestVirtAddr,
     ) -> PagingResult<(GuestPhysAddr, MappingFlags, PageSize)> {
         let addr = self.gva_to_linear_addr(gva);
-
-        // debug!("guest_page_table_query: gva {:?} linear {:?}", gva, addr);
-
         let guest_ptw_info = self.get_pagetable_walk_info();
         let guest_page_table: GuestPageTable64<X64PTE, H::PagingHandler, H::EPTTranslator> =
             GuestPageTable64::construct(&guest_ptw_info);
 
         guest_page_table.query(addr)
+    }
+
+    /// Query guest page table to get mapping info,
+    /// alone with raw page table entry value.
+    pub fn guest_page_table_query_raw(
+        &self,
+        gva: GuestVirtAddr,
+    ) -> PagingResult<(GuestPhysAddr, MappingFlags, PageSize, usize)> {
+        let addr = self.gva_to_linear_addr(gva);
+        let guest_ptw_info = self.get_pagetable_walk_info();
+        let guest_page_table: GuestPageTable64<X64PTE, H::PagingHandler, H::EPTTranslator> =
+            GuestPageTable64::construct(&guest_ptw_info);
+
+        guest_page_table.query_raw(addr)
     }
 }
 
