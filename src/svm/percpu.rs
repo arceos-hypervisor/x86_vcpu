@@ -16,7 +16,7 @@ use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 use raw_cpuid::CpuId;
 use x86_64::registers::control::EferFlags;
 
-use crate::frame::PhysFrame;
+use axaddrspace::PhysFrame;
 use crate::msr::Msr;
 use crate::svm::has_hardware_support;
 
@@ -26,7 +26,7 @@ use crate::svm::has_hardware_support;
 // (AMD64 APM Vol.2, Section 15.30.4)
 //The 64-bit read/write VM_HSAVE_PA MSR holds the physical address of a 4KB block of memory where VMRUN saves host state
 pub struct SvmPerCpuState<H: AxVCpuHal> {
-    hsave_page: PhysFrame<H>,
+    hsave_page: PhysFrame<H::MmHal>,
 }
 
 impl<H: AxVCpuHal> AxArchPerCpu for SvmPerCpuState<H> {

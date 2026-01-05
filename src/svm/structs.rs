@@ -7,14 +7,15 @@ use axaddrspace::HostPhysAddr;
 use axerrno::{AxResult};
 use axvcpu::AxVCpuHal;
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-use crate::frame::{ContiguousPhysFrames, PhysFrame};
+use axaddrspace::PhysFrame;
+use super::frame::{ContiguousPhysFrames};
 
 
 /// Virtual-Machine Control Block (VMCB)
 /// One 4 KiB page per vCPU: [control-area | save-area].
 #[derive(Debug)]
 pub struct VmcbFrame<H: AxVCpuHal> {
-    page: PhysFrame<H>,
+    page: PhysFrame<H::MmHal>,
 }
 
 impl<H: AxVCpuHal> VmcbFrame<H> {
@@ -41,12 +42,12 @@ impl<H: AxVCpuHal> VmcbFrame<H> {
 // The map is structured as a linear array of 64K+3 bits (two 4-Kbyte pages, and the first three bits of a third 4-Kbyte page) and must be aligned on a 4-Kbyte boundary;
 #[derive(Debug)]
 pub struct IOPm<H: AxVCpuHal> {
-    frames: ContiguousPhysFrames<H>,  // 3 contiguous frames (12KB)
+    frames: ContiguousPhysFrames<H::MmHal>,  // 3 contiguous frames (12KB)
 }
 
 impl<H: AxVCpuHal> IOPm<H> {
     pub fn passthrough_all() -> AxResult<Self> {
-        let mut frames = ContiguousPhysFrames::<H>::alloc_zero(3)?;
+        let mut frames = ContiguousPhysFrames::<H::MmHal>::alloc_zero(3)?;
 
         // Set first 3 bits of third frame to intercept (ports > 0xFFFF)
         let third_frame_start = frames.as_mut_ptr() as usize + 2 * PAGE_SIZE;
@@ -60,7 +61,7 @@ impl<H: AxVCpuHal> IOPm<H> {
 
     #[allow(unused)]
     pub fn intercept_all() -> AxResult<Self> {
-        let mut frames = ContiguousPhysFrames::<H>::alloc(3)?;
+        let mut frames = ContiguousPhysFrames::<H::MmHal>::alloc(3)?;
         frames.fill(0xFF); // Set all bits to 1 (intercept)
         Ok(Self { frames })
     }
@@ -99,7 +100,7 @@ impl<H: AxVCpuHal> IOPm<H> {
 // The four separate bit vectors must be packed together and located in two contiguous physical pages of memory.
 #[derive(Debug)]
 pub struct MSRPm<H: AxVCpuHal> {
-    frames: ContiguousPhysFrames<H>,
+    frames: ContiguousPhysFrames<H::MmHal>,
 }
 
 impl<H: AxVCpuHal> MSRPm<H> {

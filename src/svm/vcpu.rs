@@ -1,4 +1,5 @@
 use alloc::collections::VecDeque;
+use axvisor_api::vmm::{VCpuId, VMId};
 use bit_field::BitField;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
@@ -11,7 +12,8 @@ use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
-use axvcpu::{AccessWidth, AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
+use axaddrspace::device::AccessWidth;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use super::definitions::SvmExitCode;
@@ -522,52 +524,51 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
         let guest_regs = self.regs_mut();
         // panic!("{:x}",vmcb);
         // panic!("SVM run not implemented yet");
-        loop{};
-        asm!(
-        // "clgi",
-        "mov rax, {0}",
-        "vmload rax",
-        "vmrun rax",
-        // "call {entry}",
-        // in(reg) guest_regs,
-        in(reg) vmcb,
-        // entry = sym Self::svm_entry,
-        options(noreturn),
-        );
+        // loop{};
+        unsafe {
+            asm!(
+                // "clgi",
+                "mov rax, {0}",
+                "vmload rax",
+                "vmrun rax",
+                // "call {entry}",
+                // in(reg) guest_regs,
+                in(reg) vmcb,
+                // entry = sym Self::svm_entry,
+                options(noreturn),
+            );
+        }
     }
 
-    #[naked]
-    unsafe extern "C" fn svm_entry() -> ! {
-        naked_asm!(
-            "ud2",
-        // "mov [rdi + {host_stack_size}], rsp",
-        // "mov rsp, rdi",
-        // // restore_regs_from_stack!(),
-        // "vmload rax",
-        // "vmrun rax",
-        "jmp {failed}",
-        // host_stack_size = const size_of::<GeneralRegisters>(),
-        failed = sym Self::svm_entry_failed,
-    )
-    }
+    // #[unsafe(naked)]
+    // unsafe extern "C" fn svm_entry() -> ! {
+    //     naked_asm!(
+    //         "ud2",
+    //         // "mov [rdi + {host_stack_size}], rsp",
+    //         // "mov rsp, rdi",
+    //         // // restore_regs_from_stack!(),
+    //         // "vmload rax",
+    //         // "vmrun rax",
+    //         "jmp {failed}",
+    //         // host_stack_size = const size_of::<GeneralRegisters>(),
+    //         failed = sym Self::svm_entry_failed,
+    //     )
+    // }
 
 
 
-    #[naked]
+    #[unsafe(naked)]
     /// Return after vm-exit.
     ///
     /// The return value is a dummy value.
     unsafe extern "C" fn svm_exit(&mut self) -> usize {
-        unsafe {
-            naked_asm!(
-                save_regs_to_stack!(),                  // save guest status
-                "mov    rsp, [rsp + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
-                restore_regs_from_stack!(),             // restore host status
-                "ret",
-                host_stack_top = const size_of::<GeneralRegisters>(),
-            );
-        }
-
+        naked_asm!(
+            save_regs_to_stack!(),                  // save guest status
+            "mov    rsp, [rsp + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
+            restore_regs_from_stack!(),             // restore host status
+            "ret",
+            host_stack_top = const size_of::<GeneralRegisters>(),
+        );
     }
 
 
@@ -659,7 +660,7 @@ impl<H: AxVCpuHal> AxArchVCpu for SvmVcpu<H> {
     type CreateConfig = ();
     type SetupConfig = ();
 
-    fn new(_config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
         Self::new()
     }
 
@@ -701,6 +702,14 @@ impl<H: AxVCpuHal> AxArchVCpu for SvmVcpu<H> {
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
         self.regs_mut().set_reg_of_index(reg as u8, val as u64);
+    }
+    
+    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+        todo!()
+    }
+    
+    fn set_return_value(&mut self, val: usize) {
+        self.regs_mut().rax = val as u64;
     }
 }
 

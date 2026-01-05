@@ -5,6 +5,7 @@ mod structs;       // IOPm / MSRPm / Vmcb 封装
 mod vcpu;          // SvmVcpu（核心逻辑）
 mod vmcb;
 mod flags;
+mod frame;
 // VMCB 读写 & VMEXIT 解码
 
 pub use self::definitions::{SvmExitCode,SvmIntercept};
