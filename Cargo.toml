@@ -37,6 +37,9 @@ tock-registers = "0.10"
 
 spin = { version = "0.9", default-features = false }
 
+[dev-dependencies]
+memoffset = "0.9"
+
 [features]
 default = ["svm"]
 # default = ["vmx"]

@@ -4,7 +4,6 @@ use axaddrspace::{AxMmHal, HostPhysAddr};
 use axerrno::{AxResult, ax_err_type};
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 
-
 /// A contiguous block of physical memory frames that will be automatically
 /// deallocated when dropped. Used for hardware structures requiring contiguous
 /// physical memory (e.g., IOPM, MSRPM).
@@ -42,9 +41,9 @@ impl<H: AxMmHal> ContiguousPhysFrames<H> {
         }
     }
 
-
     pub fn start_paddr(&self) -> HostPhysAddr {
-        self.start_paddr.expect("uninitialized ContiguousPhysFrames")
+        self.start_paddr
+            .expect("uninitialized ContiguousPhysFrames")
     }
 
     pub fn frame_count(&self) -> usize {
@@ -55,11 +54,9 @@ impl<H: AxMmHal> ContiguousPhysFrames<H> {
         PAGE_SIZE * self.frame_count
     }
 
-
     pub fn as_mut_ptr(&self) -> *mut u8 {
         H::phys_to_virt(self.start_paddr()).as_mut_ptr()
     }
-
 
     pub fn fill(&mut self, byte: u8) {
         unsafe {

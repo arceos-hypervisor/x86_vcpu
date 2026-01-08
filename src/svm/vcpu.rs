@@ -1,24 +1,24 @@
 use alloc::collections::VecDeque;
 use axvisor_api::vmm::{VCpuId, VMId};
 use bit_field::BitField;
+use core::arch::asm;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
-use core::arch::asm;
 use raw_cpuid::CpuId;
 use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
 use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
+use axaddrspace::device::AccessWidth;
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AxArchVCpu, AxVCpuExitReason, AxVCpuHal};
-use axaddrspace::device::AccessWidth;
-use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
+use tock_registers::interfaces::{Debuggable, ReadWriteable, Readable, Writeable};
 
 use super::definitions::SvmExitCode;
-use super::structs::{VmcbFrame,IOPm, MSRPm};
-use super::vmcb::{NestedCtl,VmcbTlbControl,SvmExitInfo, VmcbCleanBits,set_vmcb_segment};
+use super::structs::{IOPm, MSRPm, VmcbFrame};
+use super::vmcb::{NestedCtl, SvmExitInfo, VmcbCleanBits, VmcbTlbControl, set_vmcb_segment};
 use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
 
 const QEMU_EXIT_PORT: u16 = 0x604;
@@ -155,7 +155,7 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
             launched: false,
-            vmcb:VmcbFrame::new()?,
+            vmcb: VmcbFrame::new()?,
             iopm: IOPm::passthrough_all()?,
             msrpm: MSRPm::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
@@ -169,10 +169,10 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
     }
 
     /// Set the new [`SvmVcpu`] context from guest OS.
-    pub fn setup(&mut self, npt_root: HostPhysAddr, entry: GuestPhysAddr) -> AxResult {
-        self.setup_vmcb(entry, npt_root)?;
-        Ok(())
-    }
+    // pub fn setup(&mut self, npt_root: HostPhysAddr, entry: GuestPhysAddr) -> AxResult {
+    //     self.setup_vmcb(entry, npt_root)?;
+    //     Ok(())
+    // }
 
     /// No operation is needed for SVM binding.
     ///
@@ -202,7 +202,7 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
     }
 
     pub fn get_cpu_mode(&self) -> VmCpuMode {
-        let vmcb = unsafe { self.vmcb.as_vmcb() }.state;
+        let vmcb = &mut unsafe { self.vmcb.as_vmcb() }.state;
 
         let ia32_efer = vmcb.efer.get();
         let cs_attr = vmcb.cs.attr.get();
@@ -230,11 +230,10 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
         }
 
         // Run guest
-        self.load_guest_xstate();
+        // self.load_guest_xstate();
 
         unsafe {
             self.svm_run();
-
         }
 
         self.load_host_xstate();
@@ -341,6 +340,7 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
 
 // Implementation of private methods
 impl<H: AxVCpuHal> SvmVcpu<H> {
+    #[allow(dead_code)]
     fn setup_io_bitmap(&mut self) -> AxResult {
         todo!()
     }
@@ -351,124 +351,173 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
     }
 
     fn setup_vmcb(&mut self, entry: GuestPhysAddr, npt_root: HostPhysAddr) -> AxResult {
-        self.bind_to_current_processor()?;
         self.setup_vmcb_guest(entry)?;
         self.setup_vmcb_control(npt_root, true)?;
-        self.unbind_from_current_processor()?;
+
+        info!("VMCB:\n{}", self.vmcb.hex_dump());
+
+        let vm_hsave_pa = Msr::VM_HSAVE_PA.read();
+        let cr4 = Cr4::read();
+        let efer = EferFlags::from_bits_truncate(Msr::IA32_EFER.read());
+        info!(
+            "[AxVM] VMCB setup complete (HSAVE @ {:#x}, CR4: {:#x}, EFER: {:#x})",
+            vm_hsave_pa,
+            cr4.bits(),
+            efer.bits()
+        );
+
+        unsafe {
+            asm!(
+                "mov rax, {0}",
+                "vmload rax",
+                in(reg) self.vmcb.phys_addr().as_usize() as u64,
+            )
+        }
+
+        panic!(
+            "VMLOAD OK"
+        );
+
         Ok(())
     }
-
 
     fn setup_vmcb_guest(&mut self, entry: GuestPhysAddr) -> AxResult {
         info!("[AxVM] Setting up VMCB for guest at {:#x}", entry);
         let cr0_val: Cr0Flags =
             Cr0Flags::NOT_WRITE_THROUGH | Cr0Flags::CACHE_DISABLE | Cr0Flags::EXTENSION_TYPE;
-        info!("here??????????????????");
-        self.set_cr(0, cr0_val.bits());
-        self.set_cr(4, 0);
+        self.set_cr(0, cr0_val.bits())?;
+        self.set_cr(4, 0)?;
 
-        let st = unsafe { self.vmcb.as_vmcb() }.state;
+        let st = &mut unsafe { self.vmcb.as_vmcb() }.state;
 
         macro_rules! seg {
-        ($seg:ident, $attr:expr) => {
-            set_vmcb_segment(&mut st.$seg, 0, $attr);
-        };
-    }
-        seg!(es, 0x93); seg!(cs, 0x9b); seg!(ss, 0x93); seg!(ds, 0x93);
-        seg!(fs, 0x93); seg!(gs, 0x93); seg!(tr, 0x8b); seg!(ldtr, 0x82);
+            ($seg:ident, $attr:expr) => {
+                set_vmcb_segment(&mut st.$seg, 0, $attr);
+            };
+        }
+
+        // CS: P S CODE READ (bit 7, 4, 3, 1) = 0x9a
+        // seg!(cs, 0x9b);
+        st.cs.selector.set(0xf000);
+        st.cs.base.set(0xffff0000);
+        st.cs.limit.set(0xffff);
+        st.cs.attr.set(0x9b);
+
+        // DS ~ SS: P S WRITE (bit 7, 4, 1) = 0x92
+        seg!(ds, 0x93);
+        seg!(es, 0x93);
+        seg!(fs, 0x93);
+        seg!(gs, 0x93);
+        seg!(ss, 0x93);
+        seg!(ldtr, 0x82);
+        seg!(tr, 0x83);
+        
+        // st.ldtr.selector.set(0);
+        // st.ldtr.base.set(0);
+        // st.ldtr.limit.set(0);
+        // st.ldtr.attr.set(0x1000);
 
         // GDTR / IDTR
-        st.gdtr.base.set(0);  st.gdtr.limit.set(0xffff);
-        st.idtr.base.set(0);  st.idtr.limit.set(0xffff);
+        st.gdtr.base.set(0);
+        st.gdtr.limit.set(0xffff);
+        st.idtr.base.set(0);
+        st.idtr.limit.set(0xffff);
 
         // 关键寄存器与指针
         st.cr3.set(0);
         st.dr7.set(0x400);
         st.rsp.set(0);
         st.rip.set(entry.as_usize() as u64);
-        st.rflags.set(0x2);                 // bit1 必须为 1
-        st.dr6.set(0);                      // Pending-DBG-Exceptions 对应 0
+        st.rflags.set(0x2); // bit1 必须为 1
+        st.dr6.set(0);
+        // st.dr6.set(0xffff0ff0); // Pending-DBG-Exceptions 对应 0
 
         // SYSENTER MSRs
-        st.sysenter_cs.set(0);
-        st.sysenter_esp.set(0);
-        st.sysenter_eip.set(0);
+        // st.sysenter_cs.set(0);
+        // st.sysenter_esp.set(0);
+        // st.sysenter_eip.set(0);
 
         // MSR / PAT / EFER
-        st.efer.set(0 | EferFlags::SECURE_VIRTUAL_MACHINE_ENABLE.bits()); // 必须置 SVME 位
+        st.efer
+            .set(0 | EferFlags::SECURE_VIRTUAL_MACHINE_ENABLE.bits()); // 必须置 SVME 位
         st.g_pat.set(Msr::IA32_PAT.read());
 
-        st.cpl.set(0);
-        st.star.set(0);
-        st.lstar.set(0);
-        st.cstar.set(0);
-        st.sfmask.set(0);
-        st.kernel_gs_base.set(Msr::IA32_KERNEL_GSBASE.read());
-        st.rax.set(0);                      // hypervisor 返回值
+        // st.cpl.set(0);
+        // st.star.set(0);
+        // st.lstar.set(0);
+        // st.cstar.set(0);
+        // st.sfmask.set(0);
+        // st.kernel_gs_base.set(Msr::IA32_KERNEL_GSBASE.read());
+        // st.rax.set(0); // hypervisor 返回值
 
         Ok(())
     }
 
     fn setup_vmcb_control(&mut self, npt_root: HostPhysAddr, is_guest: bool) -> AxResult {
-            let ct = unsafe { self.vmcb.as_vmcb() }.control;          // control-area 速记别名
-            // ────────────────────────────────────────────────────────
-            // 1) 基本运行环境：Nested Paging / ASID / Clean Bits / TLB
-            // ────────────────────────────────────────────────────────
+        let ct = &mut unsafe { self.vmcb.as_vmcb() }.control; // control-area 速记别名
+        // ────────────────────────────────────────────────────────
+        // 1) 基本运行环境：Nested Paging / ASID / Clean Bits / TLB
+        // ────────────────────────────────────────────────────────
 
-            // ① 开启 Nested Paging（AMD 对应 Intel 的 EPT）
-            //    → set bit 0 of NESTED_CTL
-            ct.nested_ctl.modify(NestedCtl::NP_ENABLE::SET);
+        // ① 开启 Nested Paging（AMD 对应 Intel 的 EPT）
+        //    → set bit 0 of NESTED_CTL
+        ct.nested_ctl.modify(NestedCtl::NP_ENABLE::SET);
 
-            // ② guest ASID：NPT 使用的 TLB 标签
-            ct.guest_asid.set(1);
+        // ② guest ASID：NPT 使用的 TLB 标签
+        ct.guest_asid.set(1);
 
-            // ③ 嵌套 CR3（NPT root PA）
-            ct.nested_cr3.set(npt_root.as_usize() as u64);
+        // ③ 嵌套 CR3（NPT root PA）
+        ct.nested_cr3.set(npt_root.as_usize() as u64);
 
-            // ④ Clean-Bits：0 = “全部脏” ⇒ 第一次 VMRUN 必定重新加载 save-area
-            ct.clean_bits.set(0);
+        // ④ Clean-Bits：0 = “全部脏” ⇒ 第一次 VMRUN 必定重新加载 save-area
+        ct.clean_bits.set(0);
 
-            // ⑤ TLB Control：0 = NONE, 1 = FLUSH-ASID, 3 = FLUSH-ALL
-            ct.tlb_control.modify(VmcbTlbControl::FlushGuestTlb::SET);
+        // ⑤ TLB Control：0 = NONE, 1 = FLUSH-ASID, 3 = FLUSH-ALL
+        ct.tlb_control.modify(VmcbTlbControl::CONTROL::FlushGuestTlb);
 
-            // ────────────────────────────────────────────────────────
-            // 2) 选择要拦截的指令 / 事件
-            //    （相当于 VMX 的 Pin-based / Primary / Secondary CTLS）
-            // ────────────────────────────────────────────────────────
+        ct.int_control.set(1 << 24); // V_INTR_MASKING_MASK
 
-            use super::definitions::SvmIntercept;  // 你自己定义的枚举
+        // ────────────────────────────────────────────────────────
+        // 2) 选择要拦截的指令 / 事件
+        //    （相当于 VMX 的 Pin-based / Primary / Secondary CTLS）
+        // ────────────────────────────────────────────────────────
 
-            for intc in &[
-                SvmIntercept::NMI,      // 非屏蔽中断
-                SvmIntercept::CPUID,    // CPUID 指令
-                SvmIntercept::SHUTDOWN, // HLT 时 Triple-Fault
-                SvmIntercept::VMRUN,    // 来宾企图再次 VMRUN
-                SvmIntercept::VMMCALL,  // Hypercall
-                SvmIntercept::VMLOAD,
-                SvmIntercept::VMSAVE,
-                SvmIntercept::STGI,     // 设置全局中断
-                SvmIntercept::CLGI,     // 清除全局中断
-                SvmIntercept::SKINIT,   // 安全启动
-            ] {
-                ct.set_intercept(*intc);
-            }
+        use super::definitions::SvmIntercept; // 你自己定义的枚举
+
+        for intc in &[
+            SvmIntercept::NMI,      // 非屏蔽中断
+            SvmIntercept::CPUID,    // CPUID 指令
+            SvmIntercept::SHUTDOWN, // HLT 时 Triple-Fault
+            SvmIntercept::VMRUN,    // 来宾企图再次 VMRUN
+            SvmIntercept::VMMCALL,  // Hypercall
+            SvmIntercept::VMLOAD,
+            SvmIntercept::VMSAVE,
+            SvmIntercept::STGI,   // 设置全局中断
+            SvmIntercept::CLGI,   // 清除全局中断
+            SvmIntercept::SKINIT, // 安全启动
+        ] {
+            ct.set_intercept(*intc);
+        }
+
+        ct.iopm_base_pa.set(self.iopm.phys_addr().as_usize() as u64);
+        ct.msrpm_base_pa
+            .set(self.msrpm.phys_addr().as_usize() as u64);
+
         Ok(())
     }
-        // 如果你用 bitfield 方式，也可以：
-        // ct.intercept_vector3.modify(InterceptVec3::NMI::SET + InterceptVec3::VINTR::SET);
+    // 如果你用 bitfield 方式，也可以：
+    // ct.intercept_vector3.modify(InterceptVec3::NMI::SET + InterceptVec3::VINTR::SET);
 
     fn get_paging_level(&self) -> usize {
         todo!()
     }
-
 }
 // Implementaton for type1.5 hypervisor
 // #[cfg(feature = "type1_5")]
 impl<H: AxVCpuHal> SvmVcpu<H> {
-
     pub fn set_cr(&mut self, cr_idx: usize, val: u64) -> AxResult {
-        let mut vmcb = unsafe { self.vmcb.as_vmcb() };
-        info!("here??????????????????");
+        let vmcb = unsafe { self.vmcb.as_vmcb() };
+        info!("Setting CR{} to {:#x}", cr_idx, val);
 
         match cr_idx {
             0 => vmcb.state.cr0.set(val),
@@ -490,12 +539,11 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
                 _ => unreachable!(),
             })
         })()
-            .expect("Failed to read guest control register")
+        .expect("Failed to read guest control register")
     }
 }
 
 impl<H: AxVCpuHal> SvmVcpu<H> {
-
     //  unsafe extern "C" fn svm_run(&mut self) -> usize {
     //     let vmcb_phy = self.vmcb.phys_addr().as_usize() as u64;
     //
@@ -521,23 +569,20 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
 
     pub unsafe fn svm_run(&mut self) -> usize {
         let vmcb = self.vmcb.phys_addr().as_usize() as u64;
-        let guest_regs = self.regs_mut();
-        // panic!("{:x}",vmcb);
-        // panic!("SVM run not implemented yet");
-        // loop{};
+
         unsafe {
             asm!(
-                // "clgi",
+                "clgi",
                 "mov rax, {0}",
                 "vmload rax",
-                "vmrun rax",
-                // "call {entry}",
-                // in(reg) guest_regs,
                 in(reg) vmcb,
-                // entry = sym Self::svm_entry,
-                options(noreturn),
+                // options(noreturn),
             );
         }
+        panic!("fall through after vmrun");
+
+        // let guest_regs = self.regs_mut();
+
     }
 
     // #[unsafe(naked)]
@@ -555,13 +600,11 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
     //     )
     // }
 
-
-
-    #[unsafe(naked)]
     /// Return after vm-exit.
     ///
     /// The return value is a dummy value.
-    unsafe extern "C" fn svm_exit(&mut self) -> usize {
+    #[unsafe(naked)]
+    unsafe extern fn svm_exit(&mut self) -> usize {
         naked_asm!(
             save_regs_to_stack!(),                  // save guest status
             "mov    rsp, [rsp + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
@@ -570,7 +613,6 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
             host_stack_top = const size_of::<GeneralRegisters>(),
         );
     }
-
 
     fn svm_entry_failed() -> ! {
         panic!("svm_entry_failed");
@@ -636,11 +678,11 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
     }
 
     fn load_guest_xstate(&mut self) {
-    self.xstate.switch_to_guest();
+        self.xstate.switch_to_guest();
     }
 
     fn load_host_xstate(&mut self) {
-    self.xstate.switch_to_host();
+        self.xstate.switch_to_host();
     }
 }
 
@@ -664,7 +706,6 @@ impl<H: AxVCpuHal> AxArchVCpu for SvmVcpu<H> {
         Self::new()
     }
 
-
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
         self.entry = Some(entry);
         Ok(())
@@ -681,15 +722,14 @@ impl<H: AxVCpuHal> AxArchVCpu for SvmVcpu<H> {
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
         match self.inner_run() {
-                Some(exit_info) => {
-                warn!("VMX unsupported VM-Exit: {:#x?}",exit_info.exit_info_1);
+            Some(exit_info) => {
+                warn!("VMX unsupported VM-Exit: {:#x?}", exit_info.exit_info_1);
                 warn!("VCpu {:#x?}", self);
                 Ok(AxVCpuExitReason::Halt)
             }
-            _ => Ok(AxVCpuExitReason::Halt)
+            _ => Ok(AxVCpuExitReason::Halt),
         }
     }
-
 
     fn bind(&mut self) -> AxResult {
         self.bind_to_current_processor()
@@ -703,14 +743,12 @@ impl<H: AxVCpuHal> AxArchVCpu for SvmVcpu<H> {
     fn set_gpr(&mut self, reg: usize, val: usize) {
         self.regs_mut().set_reg_of_index(reg as u8, val as u64);
     }
-    
+
     fn inject_interrupt(&mut self, vector: usize) -> AxResult {
         todo!()
     }
-    
+
     fn set_return_value(&mut self, val: usize) {
         self.regs_mut().rax = val as u64;
     }
 }
-
-

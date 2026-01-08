@@ -899,7 +899,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     /// This function itself never returns, but [`Self::vmx_exit`] will do the return for this.
     ///
     /// The return value is a dummy value.
-    unsafe extern "C" fn vmx_launch(&mut self) -> usize {
+    unsafe extern fn vmx_launch(&mut self) -> usize {
         vmx_entry_with!("vmlaunch")
     }
 
@@ -907,7 +907,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     /// Enter guest with vmresume.
     ///
     /// See [`Self::vmx_launch`] for detail.
-    unsafe extern "C" fn vmx_resume(&mut self) -> usize {
+    unsafe extern fn vmx_resume(&mut self) -> usize {
         vmx_entry_with!("vmresume")
     }
 
@@ -917,7 +917,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
     /// NEVER call this function directly.
     ///
     /// The return value is a dummy value.
-    unsafe extern "C" fn vmx_exit(&mut self) -> usize {
+    unsafe extern fn vmx_exit(&mut self) -> usize {
         // it's not necessary to use another `unsafe` here, as Rust now do not require it in naked functions.
         naked_asm!(
             save_regs_to_stack!(),                  // save guest status, after this, rsp points to the `VmxVcpu`

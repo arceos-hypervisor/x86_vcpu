@@ -25,17 +25,14 @@ use tock_registers::{register_bitfields, register_structs};
 use axaddrspace::HostPhysAddr;
 use axerrno::AxResult;
 
+use super::definitions::{SvmExitCode, SvmIntercept};
+use super::structs::VmcbFrame; // the user‑supplied wrapper that owns the backing page
 use axvcpu::AxVCpuHal;
 use memory_addr::MemoryAddr;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use super::structs::VmcbFrame; // the user‑supplied wrapper that owns the backing page
-use super::definitions::{SvmIntercept,SvmExitCode};
 // ─────────────────────────────────────────────────────────────────────────────
 //  Control‑area bitfields
 // ─────────────────────────────────────────────────────────────────────────────
-
-
-
 
 register_bitfields![u32,
     // vector 0
@@ -113,12 +110,28 @@ register_bitfields![u64,
 
 register_bitfields![u8,
     pub VmcbTlbControl [
-        DoNothing                0,
-        FlushAllOnVmrun          1,
-        FlushGuestTlb            3,
-        FlushGuestNonGlobalTlb   7,
+        CONTROL OFFSET(0) NUMBITS(3) [
+            DoNothing                = 0,
+            FlushAllOnVmrun          = 1,
+            FlushGuestTlb            = 3,
+            FlushGuestNonGlobalTlb   = 7,
+        ]
     ]
 ];
+
+// register_bitfields![u16,
+//     pub VmcbSegmentAttr [
+//         // ACCESSED        OFFSET(0) NUMBITS(1),  // not used in VMCB
+//         READABLE        OFFSET(1) NUMBITS(1),
+
+//         /// Code/Data bit, available for User segments (`S` = 1) only
+//         CODE            OFFSET(3) NUMBITS(1),
+//         /// User/System bit `S`
+//         USER            OFFSET(4) NUMBITS(1),
+//         /// DPL
+//         DPL             OFFSET(5) NUMBITS(2),
+//     ]
+// ];
 
 register_structs![
     pub VmcbControlArea {
@@ -264,44 +277,47 @@ register_structs![
         (0x0290 => pub last_excp_to:  ReadWrite<u64>),
         (0x0298 => _reserved_0298),
 
-        (0x0FFF => @END),
+        (0x0C00 => @END),
+    }
+];
+
+register_structs![
+    pub VmcbStruct {
+        (0x0000 => pub control: VmcbControlArea),
+        (0x0400 => pub state:   VmcbStateSaveArea),
+        (0x1000 => @END),
     }
 ];
 
 /// Unified façade returning typed accessors to both halves of the VMCB.
 pub struct Vmcb<'a> {
     pub control: &'a mut VmcbControlArea,
-    pub state:   &'a mut VmcbStateSaveArea,
+    pub state: &'a mut VmcbStateSaveArea,
 }
 
 impl<H: AxVCpuHal> VmcbFrame<H> {
     /// # Safety
     /// caller must guarantee the page is mapped
-    pub unsafe fn as_vmcb<'a>(&'a self) -> Vmcb<'a> {
-        let base = self.as_mut_ptr();
-
-        Vmcb {
-            control: &mut *(base as *mut VmcbControlArea),
-            state:   &mut *(base.add(0x400) as *mut VmcbStateSaveArea),
-        }
+    pub unsafe fn as_vmcb(&self) -> &mut VmcbStruct {
+        unsafe { self.as_mut_ptr_vmcb().as_mut().unwrap() }
     }
 }
 
-impl Vmcb <'_>{
+impl VmcbStruct {
     /// Zero‑initialise the control area
     pub fn clear_control(&mut self) {
-        unsafe { core::ptr::write_bytes(self.control as *mut _ as *mut u8, 0, 0x400) };
+        unsafe { core::ptr::write_bytes(&mut self.control as *mut _ as *mut u8, 0, 0x400) };
     }
-    pub fn clean_bits(&mut self)-> &mut ReadWrite<u32, VmcbCleanBits::Register> {
+    pub fn clean_bits(&mut self) -> &mut ReadWrite<u32, VmcbCleanBits::Register> {
         &mut self.control.clean_bits
     }
 }
 
 pub fn set_vmcb_segment(seg: &mut VmcbSegment, selector: u16, attr: u16) {
     seg.selector.set(selector); // 一般初始化阶段都传 0
-    seg.base.set(0);            // 实模式／平坦段：基址 0
-    seg.limit.set(0xFFFF);      // 64 KiB 段界限
-    seg.attr.set(attr);         // AR 字节（0x93, 0x9B, 0x8B, 0x82 …）
+    seg.base.set(0); // 实模式／平坦段：基址 0
+    seg.limit.set(0xFFFF); // 64 KiB 段界限
+    seg.attr.set(attr); // AR 字节（0x93, 0x9B, 0x8B, 0x82 …）
 }
 
 impl VmcbControlArea {
@@ -309,63 +325,81 @@ impl VmcbControlArea {
         use super::definitions::SvmIntercept::*;
         match intc {
             // ── Vector 3 ───────────────────────────────
-            INTR            => self.intercept_vector3.modify(InterceptVec3::INTR::SET),
-            NMI             => self.intercept_vector3.modify(InterceptVec3::NMI::SET),
-            SMI             => self.intercept_vector3.modify(InterceptVec3::SMI::SET),
-            INIT            => self.intercept_vector3.modify(InterceptVec3::INIT::SET),
-            VINTR           => self.intercept_vector3.modify(InterceptVec3::VINTR::SET),
-            CR0_SEL_WRITE   => self.intercept_vector3.modify(InterceptVec3::CR0_SEL_WRITE::SET),
-            IDTR_READ       => self.intercept_vector3.modify(InterceptVec3::IDTR_READ::SET),
-            GDTR_READ       => self.intercept_vector3.modify(InterceptVec3::GDTR_READ::SET),
-            LDTR_READ       => self.intercept_vector3.modify(InterceptVec3::LDTR_READ::SET),
-            TR_READ         => self.intercept_vector3.modify(InterceptVec3::TR_READ::SET),
-            IDTR_WRITE      => self.intercept_vector3.modify(InterceptVec3::IDTR_WRITE::SET),
-            GDTR_WRITE      => self.intercept_vector3.modify(InterceptVec3::GDTR_WRITE::SET),
-            LDTR_WRITE      => self.intercept_vector3.modify(InterceptVec3::LDTR_WRITE::SET),
-            TR_WRITE        => self.intercept_vector3.modify(InterceptVec3::TR_WRITE::SET),
-            RDTSC           => self.intercept_vector3.modify(InterceptVec3::RDTSC::SET),
-            RDPMC           => self.intercept_vector3.modify(InterceptVec3::RDPMC::SET),
-            PUSHF           => self.intercept_vector3.modify(InterceptVec3::PUSHF::SET),
-            POPF            => self.intercept_vector3.modify(InterceptVec3::POPF::SET),
-            CPUID           => self.intercept_vector3.modify(InterceptVec3::CPUID::SET),
-            RSM             => self.intercept_vector3.modify(InterceptVec3::RSM::SET),
-            IRET            => self.intercept_vector3.modify(InterceptVec3::IRET::SET),
-            SWINT           => self.intercept_vector3.modify(InterceptVec3::SWINT::SET),
-            INVD            => self.intercept_vector3.modify(InterceptVec3::INVD::SET),
-            PAUSE           => self.intercept_vector3.modify(InterceptVec3::PAUSE::SET),
-            HLT             => self.intercept_vector3.modify(InterceptVec3::HLT::SET),
-            INVLPG          => self.intercept_vector3.modify(InterceptVec3::INVLPG::SET),
-            INVLPGA         => self.intercept_vector3.modify(InterceptVec3::INVLPGA::SET),
-            IOIO_PROT       => self.intercept_vector3.modify(InterceptVec3::IOIO_PROT::SET),
-            MSR_PROT        => self.intercept_vector3.modify(InterceptVec3::MSR_PROT::SET),
-            TASK_SWITCH     => self.intercept_vector3.modify(InterceptVec3::TASK_SWITCH::SET),
-            FERR_FREEZE     => self.intercept_vector3.modify(InterceptVec3::FERR_FREEZE::SET),
-            SHUTDOWN        => self.intercept_vector3.modify(InterceptVec3::SHUTDOWN::SET),
+            INTR => self.intercept_vector3.modify(InterceptVec3::INTR::SET),
+            NMI => self.intercept_vector3.modify(InterceptVec3::NMI::SET),
+            SMI => self.intercept_vector3.modify(InterceptVec3::SMI::SET),
+            INIT => self.intercept_vector3.modify(InterceptVec3::INIT::SET),
+            VINTR => self.intercept_vector3.modify(InterceptVec3::VINTR::SET),
+            CR0_SEL_WRITE => self
+                .intercept_vector3
+                .modify(InterceptVec3::CR0_SEL_WRITE::SET),
+            IDTR_READ => self.intercept_vector3.modify(InterceptVec3::IDTR_READ::SET),
+            GDTR_READ => self.intercept_vector3.modify(InterceptVec3::GDTR_READ::SET),
+            LDTR_READ => self.intercept_vector3.modify(InterceptVec3::LDTR_READ::SET),
+            TR_READ => self.intercept_vector3.modify(InterceptVec3::TR_READ::SET),
+            IDTR_WRITE => self
+                .intercept_vector3
+                .modify(InterceptVec3::IDTR_WRITE::SET),
+            GDTR_WRITE => self
+                .intercept_vector3
+                .modify(InterceptVec3::GDTR_WRITE::SET),
+            LDTR_WRITE => self
+                .intercept_vector3
+                .modify(InterceptVec3::LDTR_WRITE::SET),
+            TR_WRITE => self.intercept_vector3.modify(InterceptVec3::TR_WRITE::SET),
+            RDTSC => self.intercept_vector3.modify(InterceptVec3::RDTSC::SET),
+            RDPMC => self.intercept_vector3.modify(InterceptVec3::RDPMC::SET),
+            PUSHF => self.intercept_vector3.modify(InterceptVec3::PUSHF::SET),
+            POPF => self.intercept_vector3.modify(InterceptVec3::POPF::SET),
+            CPUID => self.intercept_vector3.modify(InterceptVec3::CPUID::SET),
+            RSM => self.intercept_vector3.modify(InterceptVec3::RSM::SET),
+            IRET => self.intercept_vector3.modify(InterceptVec3::IRET::SET),
+            SWINT => self.intercept_vector3.modify(InterceptVec3::SWINT::SET),
+            INVD => self.intercept_vector3.modify(InterceptVec3::INVD::SET),
+            PAUSE => self.intercept_vector3.modify(InterceptVec3::PAUSE::SET),
+            HLT => self.intercept_vector3.modify(InterceptVec3::HLT::SET),
+            INVLPG => self.intercept_vector3.modify(InterceptVec3::INVLPG::SET),
+            INVLPGA => self.intercept_vector3.modify(InterceptVec3::INVLPGA::SET),
+            IOIO_PROT => self.intercept_vector3.modify(InterceptVec3::IOIO_PROT::SET),
+            MSR_PROT => self.intercept_vector3.modify(InterceptVec3::MSR_PROT::SET),
+            TASK_SWITCH => self
+                .intercept_vector3
+                .modify(InterceptVec3::TASK_SWITCH::SET),
+            FERR_FREEZE => self
+                .intercept_vector3
+                .modify(InterceptVec3::FERR_FREEZE::SET),
+            SHUTDOWN => self.intercept_vector3.modify(InterceptVec3::SHUTDOWN::SET),
 
             // ── Vector 4 ───────────────────────────────
-            VMRUN           => self.intercept_vector4.modify(InterceptVec4::VMRUN::SET),
-            VMMCALL         => self.intercept_vector4.modify(InterceptVec4::VMMCALL::SET),
-            VMLOAD          => self.intercept_vector4.modify(InterceptVec4::VMLOAD::SET),
-            VMSAVE          => self.intercept_vector4.modify(InterceptVec4::VMSAVE::SET),
-            STGI            => self.intercept_vector4.modify(InterceptVec4::STGI::SET),
-            CLGI            => self.intercept_vector4.modify(InterceptVec4::CLGI::SET),
-            SKINIT          => self.intercept_vector4.modify(InterceptVec4::SKINIT::SET),
-            RDTSCP          => self.intercept_vector4.modify(InterceptVec4::RDTSCP::SET),
-            ICEBP           => self.intercept_vector4.modify(InterceptVec4::ICEBP::SET),
-            WBINVD          => self.intercept_vector4.modify(InterceptVec4::WBINVD::SET),
-            MONITOR         => self.intercept_vector4.modify(InterceptVec4::MONITOR::SET),
-            MWAIT           => self.intercept_vector4.modify(InterceptVec4::MWAIT::SET),
-            MWAIT_CONDITIONAL => self.intercept_vector4.modify(InterceptVec4::MWAIT_CONDITIONAL::SET),
-            XSETBV          => self.intercept_vector4.modify(InterceptVec4::XSETBV::SET),
-            RDPRU           => self.intercept_vector4.modify(InterceptVec4::RDPRU::SET),
-            EFER_WRITE_TRAP => self.intercept_vector4.modify(InterceptVec4::EFER_WRITE_TRAP::SET),
+            VMRUN => self.intercept_vector4.modify(InterceptVec4::VMRUN::SET),
+            VMMCALL => self.intercept_vector4.modify(InterceptVec4::VMMCALL::SET),
+            VMLOAD => self.intercept_vector4.modify(InterceptVec4::VMLOAD::SET),
+            VMSAVE => self.intercept_vector4.modify(InterceptVec4::VMSAVE::SET),
+            STGI => self.intercept_vector4.modify(InterceptVec4::STGI::SET),
+            CLGI => self.intercept_vector4.modify(InterceptVec4::CLGI::SET),
+            SKINIT => self.intercept_vector4.modify(InterceptVec4::SKINIT::SET),
+            RDTSCP => self.intercept_vector4.modify(InterceptVec4::RDTSCP::SET),
+            ICEBP => self.intercept_vector4.modify(InterceptVec4::ICEBP::SET),
+            WBINVD => self.intercept_vector4.modify(InterceptVec4::WBINVD::SET),
+            MONITOR => self.intercept_vector4.modify(InterceptVec4::MONITOR::SET),
+            MWAIT => self.intercept_vector4.modify(InterceptVec4::MWAIT::SET),
+            MWAIT_CONDITIONAL => self
+                .intercept_vector4
+                .modify(InterceptVec4::MWAIT_CONDITIONAL::SET),
+            XSETBV => self.intercept_vector4.modify(InterceptVec4::XSETBV::SET),
+            RDPRU => self.intercept_vector4.modify(InterceptVec4::RDPRU::SET),
+            EFER_WRITE_TRAP => self
+                .intercept_vector4
+                .modify(InterceptVec4::EFER_WRITE_TRAP::SET),
 
             // ── Vector 5 ───────────────────────────────
-            INVLPGB         => self.intercept_vector5.modify(InterceptVec5::INVLPGB::SET),
-            INVLPGB_ILLEGAL => self.intercept_vector5.modify(InterceptVec5::INVLPGB_ILLEGAL::SET),
-            INVPCID         => self.intercept_vector5.modify(InterceptVec5::INVPCID::SET),
-            MCOMMIT         => self.intercept_vector5.modify(InterceptVec5::MCOMMIT::SET),
-            TLBSYNC         => self.intercept_vector5.modify(InterceptVec5::TLBSYNC::SET),
+            INVLPGB => self.intercept_vector5.modify(InterceptVec5::INVLPGB::SET),
+            INVLPGB_ILLEGAL => self
+                .intercept_vector5
+                .modify(InterceptVec5::INVLPGB_ILLEGAL::SET),
+            INVPCID => self.intercept_vector5.modify(InterceptVec5::INVPCID::SET),
+            MCOMMIT => self.intercept_vector5.modify(InterceptVec5::MCOMMIT::SET),
+            TLBSYNC => self.intercept_vector5.modify(InterceptVec5::TLBSYNC::SET),
         }
     }
 }
@@ -378,8 +412,8 @@ pub struct SvmExitInfo {
     pub guest_next_rip: u64,
 }
 
-impl Vmcb <'_> {
-    pub fn exit_info(mut self) -> AxResult<SvmExitInfo> {
+impl VmcbStruct {
+    pub fn exit_info(&self) -> AxResult<SvmExitInfo> {
         Ok(SvmExitInfo {
             exit_code: self.control.exit_code.get().try_into(),
             exit_info_1: self.control.exit_info_1.get(),
@@ -387,5 +421,113 @@ impl Vmcb <'_> {
             guest_rip: self.state.rip.get(),
             guest_next_rip: self.control.next_rip.get(),
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn vmcb_size_check() {
+        use core::mem::size_of;
+
+        assert_eq!(size_of::<VmcbControlArea>(), 0x400);
+        assert_eq!(size_of::<VmcbStateSaveArea>(), 0xC00);
+        assert_eq!(size_of::<VmcbStruct>(), 0x1000);
+    }
+
+    #[test]
+    fn vmcb_offset_check() {
+        use memoffset::offset_of;
+
+        assert_eq!(offset_of!(VmcbStruct, control), 0x0000);
+        assert_eq!(offset_of!(VmcbStruct, state), 0x0400);
+
+        macro_rules! assert_vmcb_ctrl_offset {
+            ($field:ident, $offset:expr) => {
+                assert_eq!(offset_of!(VmcbControlArea, $field), $offset);
+            };
+        }
+
+        macro_rules! assert_vmcb_save_offset {
+            ($field:ident, $offset:expr) => {
+                assert_eq!(offset_of!(VmcbStateSaveArea, $field), $offset);
+            };
+        }
+
+        assert_vmcb_ctrl_offset!(intercept_cr, 0x00);
+        assert_vmcb_ctrl_offset!(intercept_dr, 0x04);
+        assert_vmcb_ctrl_offset!(intercept_exceptions, 0x08);
+        assert_vmcb_ctrl_offset!(intercept_vector3, 0x0C);
+        assert_vmcb_ctrl_offset!(intercept_vector4, 0x10);
+        assert_vmcb_ctrl_offset!(intercept_vector5, 0x14);
+        assert_vmcb_ctrl_offset!(pause_filter_thresh, 0x3C);
+        assert_vmcb_ctrl_offset!(pause_filter_count, 0x3E);
+        assert_vmcb_ctrl_offset!(iopm_base_pa, 0x40);
+        assert_vmcb_ctrl_offset!(msrpm_base_pa, 0x48);
+        assert_vmcb_ctrl_offset!(tsc_offset, 0x50);
+        assert_vmcb_ctrl_offset!(guest_asid, 0x58);
+        assert_vmcb_ctrl_offset!(tlb_control, 0x5C);
+        assert_vmcb_ctrl_offset!(int_control, 0x60);
+        assert_vmcb_ctrl_offset!(int_vector, 0x64);
+        assert_vmcb_ctrl_offset!(int_state, 0x68);
+        assert_vmcb_ctrl_offset!(exit_code, 0x70);
+        assert_vmcb_ctrl_offset!(exit_info_1, 0x78);
+        assert_vmcb_ctrl_offset!(exit_info_2, 0x80);
+        assert_vmcb_ctrl_offset!(exit_int_info, 0x88);
+        assert_vmcb_ctrl_offset!(exit_int_info_err, 0x8C);
+        assert_vmcb_ctrl_offset!(nested_ctl, 0x90);
+        assert_vmcb_ctrl_offset!(avic_vapic_bar, 0x98);
+        assert_vmcb_ctrl_offset!(event_inj, 0xA8);
+        assert_vmcb_ctrl_offset!(event_inj_err, 0xAC);
+        assert_vmcb_ctrl_offset!(nested_cr3, 0xB0);
+        assert_vmcb_ctrl_offset!(virt_ext, 0xB8);
+        assert_vmcb_ctrl_offset!(clean_bits, 0xC0);
+        assert_vmcb_ctrl_offset!(next_rip, 0xC8);
+        assert_vmcb_ctrl_offset!(insn_len, 0xD0);
+        assert_vmcb_ctrl_offset!(insn_bytes, 0xD1);
+        assert_vmcb_ctrl_offset!(avic_backing_page, 0xE0);
+        assert_vmcb_ctrl_offset!(avic_logical_id, 0xF0);
+        assert_vmcb_ctrl_offset!(avic_physical_id, 0xF8);
+
+        assert_vmcb_save_offset!(es, 0x00);
+        assert_vmcb_save_offset!(cs, 0x10);
+        assert_vmcb_save_offset!(ss, 0x20);
+        assert_vmcb_save_offset!(ds, 0x30);
+        assert_vmcb_save_offset!(fs, 0x40);
+        assert_vmcb_save_offset!(gs, 0x50);
+        assert_vmcb_save_offset!(gdtr, 0x60);
+        assert_vmcb_save_offset!(ldtr, 0x70);
+        assert_vmcb_save_offset!(idtr, 0x80);
+        assert_vmcb_save_offset!(tr, 0x90);
+        assert_vmcb_save_offset!(cpl, 0xCB);
+        assert_vmcb_save_offset!(efer, 0xD0);
+        assert_vmcb_save_offset!(cr4, 0x148);
+        assert_vmcb_save_offset!(cr3, 0x150);
+        assert_vmcb_save_offset!(cr0, 0x158);
+        assert_vmcb_save_offset!(dr7, 0x160);
+        assert_vmcb_save_offset!(dr6, 0x168);
+        assert_vmcb_save_offset!(rflags, 0x170);
+        assert_vmcb_save_offset!(rip, 0x178);
+        assert_vmcb_save_offset!(rsp, 0x1D8);
+        assert_vmcb_save_offset!(s_cet, 0x1E0);
+        assert_vmcb_save_offset!(ssp, 0x1E8);
+        assert_vmcb_save_offset!(isst_addr, 0x1F0);
+        assert_vmcb_save_offset!(rax, 0x1F8);
+        assert_vmcb_save_offset!(star, 0x200);
+        assert_vmcb_save_offset!(lstar, 0x208);
+        assert_vmcb_save_offset!(cstar, 0x210);
+        assert_vmcb_save_offset!(sfmask, 0x218);
+        assert_vmcb_save_offset!(kernel_gs_base, 0x220);
+        assert_vmcb_save_offset!(sysenter_cs, 0x228);
+        assert_vmcb_save_offset!(sysenter_esp, 0x230);
+        assert_vmcb_save_offset!(sysenter_eip, 0x238);
+        assert_vmcb_save_offset!(cr2, 0x240);
+        assert_vmcb_save_offset!(g_pat, 0x268);
+        assert_vmcb_save_offset!(dbgctl, 0x270);
+        assert_vmcb_save_offset!(br_from, 0x278);
+        assert_vmcb_save_offset!(br_to, 0x280);
+        assert_vmcb_save_offset!(last_excp_from, 0x288);
+        assert_vmcb_save_offset!(last_excp_to, 0x290);
     }
 }

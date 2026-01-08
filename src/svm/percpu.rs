@@ -10,16 +10,15 @@
 //!  3. Set `EFER.SVME` (bit 12) to enable SVM mode
 //!  4. Clearing `EFER.SVME` disables SVM (no need for VMXON/VMXOFF equivalents)
 
-use axerrno::{ax_err, ax_err_type, AxResult};
+use axerrno::{AxResult, ax_err, ax_err_type};
 use axvcpu::{AxArchPerCpu, AxVCpuHal};
 use memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
 use raw_cpuid::CpuId;
-use x86_64::registers::control::EferFlags;
+use x86_64::registers::control::{Efer, EferFlags};
 
-use axaddrspace::PhysFrame;
 use crate::msr::Msr;
 use crate::svm::has_hardware_support;
-
+use axaddrspace::PhysFrame;
 
 /// Per-core state for AMD-SVM
 
@@ -50,38 +49,52 @@ impl<H: AxVCpuHal> AxArchPerCpu for SvmPerCpuState<H> {
             return ax_err!(ResourceBusy, "SVM already enabled");
         }
 
+        // make sure all perf counters are off
+        unsafe {
+            /// Core Performance Event-Select Register (PerfEvtSeln), Counter Enable (bit 22)
+            const PERF_EVT_SEL_EN: u64 = 1 << 22;
+            Msr::PERF_EVT_SEL0.write(Msr::PERF_EVT_SEL0.read() & !PERF_EVT_SEL_EN);
+            Msr::PERF_EVT_SEL1.write(Msr::PERF_EVT_SEL1.read() & !PERF_EVT_SEL_EN);
+            Msr::PERF_EVT_SEL2.write(Msr::PERF_EVT_SEL2.read() & !PERF_EVT_SEL_EN);
+            Msr::PERF_EVT_SEL3.write(Msr::PERF_EVT_SEL3.read() & !PERF_EVT_SEL_EN);
+            Msr::PERF_EVT_SEL4.write(Msr::PERF_EVT_SEL4.read() & !PERF_EVT_SEL_EN);
+            Msr::PERF_EVT_SEL5.write(Msr::PERF_EVT_SEL5.read() & !PERF_EVT_SEL_EN);
+        }
+
         // Enable XSAVE/XRSTOR.
         super::vcpu::XState::enable_xsave();
 
         // Allocate & register Host-Save Area
         self.hsave_page = PhysFrame::alloc_zero()?;
         let hsave_pa = self.hsave_page.start_paddr().as_usize() as u64;
-        unsafe { Msr::VM_HSAVE_PA.write(hsave_pa); }
+        unsafe {
+            Msr::VM_HSAVE_PA.write(hsave_pa);
+        }
 
-
-        //Set EFER.SVME to enable SVM
+        //S et EFER.SVME to enable SVM
         let mut efer = EferFlags::from_bits_truncate(Msr::IA32_EFER.read());
         efer.insert(EferFlags::SECURE_VIRTUAL_MACHINE_ENABLE); // bit 12
-        unsafe { Msr::IA32_EFER.write(efer.bits()); }
+        unsafe {
+            Msr::IA32_EFER.write(efer.bits());
+        }
 
         info!("[AxVM] SVM enabled (HSAVE @ {:#x}).", hsave_pa);
         Ok(())
     }
-
 
     fn hardware_disable(&mut self) -> AxResult {
         if !self.is_enabled() {
             return ax_err!(BadState, "SVM is not enabled");
         }
         unsafe {
-        // 1) Clear SVME bit
-        let mut efer = EferFlags::from_bits_truncate(Msr::IA32_EFER.read());
-        efer.remove(EferFlags::SECURE_VIRTUAL_MACHINE_ENABLE);
-        Msr::IA32_EFER.write(efer.bits());
+            // 1) Clear SVME bit
+            let mut efer = EferFlags::from_bits_truncate(Msr::IA32_EFER.read());
+            efer.remove(EferFlags::SECURE_VIRTUAL_MACHINE_ENABLE);
+            Msr::IA32_EFER.write(efer.bits());
 
-        // 2) Clear HSAVE pointer
-        Msr::VM_HSAVE_PA.write(0);
-    }
+            // 2) Clear HSAVE pointer
+            Msr::VM_HSAVE_PA.write(0);
+        }
         info!("[AxVM] SVM disabled.");
         Ok(())
     }
