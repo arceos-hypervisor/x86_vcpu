@@ -56,7 +56,13 @@ impl<H: AxVCpuHal> VmcbFrame<H> {
                 let bytes = core::slice::from_raw_parts(ptr, 16);
                 let hex_bytes: alloc::string::String = bytes
                     .iter()
-                    .map(|b| if *b == 0 { " --".to_string() } else { alloc::format!(" {:02x}", b) })
+                    .map(|b| {
+                        if *b == 0 {
+                            " --".to_string()
+                        } else {
+                            alloc::format!(" {:02x}", b)
+                        }
+                    })
                     .collect();
                 alloc::format!("{:04x}:{}\n", offset, hex_bytes)
             };

@@ -7,6 +7,10 @@ use x86::msr::{rdmsr, wrmsr};
 pub enum Msr {
     IA32_FEATURE_CONTROL = 0x3a,
 
+    IA32_SYSENTER_CS = 0x174,
+    IA32_SYSENTER_ESP = 0x175,
+    IA32_SYSENTER_EIP = 0x176,
+
     IA32_PAT = 0x277,
 
     IA32_VMX_BASIC = 0x480,

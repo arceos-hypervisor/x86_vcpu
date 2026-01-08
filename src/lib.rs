@@ -15,6 +15,7 @@ pub(crate) mod msr;
 #[macro_use]
 pub(crate) mod regs;
 mod ept;
+pub(crate) mod xstate;
 
 #[cfg(all(feature = "vmx", feature = "svm"))]
 compile_error!("Features 'vmx' and 'svm' are mutually exclusive. Please enable only one of them.");

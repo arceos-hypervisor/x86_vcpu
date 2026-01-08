@@ -62,7 +62,7 @@ impl<H: AxVCpuHal> AxArchPerCpu for SvmPerCpuState<H> {
         }
 
         // Enable XSAVE/XRSTOR.
-        super::vcpu::XState::enable_xsave();
+        crate::xstate::enable_xsave();
 
         // Allocate & register Host-Save Area
         self.hsave_page = PhysFrame::alloc_zero()?;
@@ -71,7 +71,7 @@ impl<H: AxVCpuHal> AxArchPerCpu for SvmPerCpuState<H> {
             Msr::VM_HSAVE_PA.write(hsave_pa);
         }
 
-        //S et EFER.SVME to enable SVM
+        // Set EFER.SVME to enable SVM
         let mut efer = EferFlags::from_bits_truncate(Msr::IA32_EFER.read());
         efer.insert(EferFlags::SECURE_VIRTUAL_MACHINE_ENABLE); // bit 12
         unsafe {

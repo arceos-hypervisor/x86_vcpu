@@ -4,9 +4,9 @@ use bit_field::BitField;
 use core::arch::asm;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
-use raw_cpuid::CpuId;
 use x86::controlregs::{Xcr0, xcr0 as xcr0_read, xcr0_write};
 use x86::dtables::{self, DescriptorTablePointer};
+use x86::msr::IA32_GS_BASE;
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
 
@@ -19,19 +19,10 @@ use tock_registers::interfaces::{Debuggable, ReadWriteable, Readable, Writeable}
 use super::definitions::SvmExitCode;
 use super::structs::{IOPm, MSRPm, VmcbFrame};
 use super::vmcb::{NestedCtl, SvmExitInfo, VmcbCleanBits, VmcbTlbControl, set_vmcb_segment};
-use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters};
+use crate::{ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters, xstate::XState};
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
-pub struct XState {
-    host_xcr0: u64,
-    guest_xcr0: u64,
-    host_xss: u64,
-    guest_xss: u64,
-
-    xsave_available: bool,
-    xsaves_available: bool,
-}
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
@@ -41,94 +32,155 @@ pub enum VmCpuMode {
     Mode64,        // IA-32E mode (CS.L = 1)
 }
 
-impl XState {
-    /// Create a new [`XState`] instance with current host state
-    fn new() -> Self {
-        // Check if XSAVE is available
-        let xsave_available = Self::xsave_available();
-        // Check if XSAVES and XRSTORS (as well as IA32_XSS) are available
-        let xsaves_available = if xsave_available {
-            Self::xsaves_available()
-        } else {
-            false
-        };
+/// States loaded/stored during VMLOAD/VMSAVE instructions.
+///
+/// VMLOAD/VMSAVE only load/store the guest version of these states from/to the
+/// VMCB, but not the host version. Therefore, we need to keep track of the host
+/// versions separately.
+#[derive(Default)]
+pub struct VmLoadSaveStates {
+    /// The base address of the FS segment.
+    pub fs_base: u64,
+    /// The base address of the GS segment.
+    pub gs_base: u64,
+    /// The value of the KERNEL_GS_BASE MSR.
+    pub kernel_gs_base: u64,
+    /// The value of the SYSENTER_CS MSR.
+    pub sysenter_cs: u64,
+    /// The value of the SYSENTER_ESP MSR.
+    pub sysenter_esp: u64,
+    /// The value of the SYSENTER_EIP MSR.
+    pub sysenter_eip: u64,
+    /// The value of the STAR MSR.
+    pub star: u64,
+    /// The value of the LSTAR MSR.
+    pub lstar: u64,
+    /// The value of the CSTAR MSR.
+    pub cstar: u64,
+    /// The value of the SF_MASK MSR.
+    pub sfmask: u64,
+    /// The local descriptor table register.
+    pub ldtr: u16,
+    /// The task register.
+    pub tr: u16,
+}
 
-        // Read XCR0 iff XSAVE is available
-        let xcr0 = if xsave_available {
-            unsafe { xcr0_read().bits() }
-        } else {
-            0
-        };
-        // Read IA32_XSS iff XSAVES is available
-        let xss = if xsaves_available {
-            Msr::IA32_XSS.read()
-        } else {
-            0
-        };
-
-        Self {
-            host_xcr0: xcr0,
-            guest_xcr0: xcr0,
-            host_xss: xss,
-            guest_xss: xss,
-            xsave_available,
-            xsaves_available,
-        }
+// Some fields are not loaded/saved because they are not used in ArceOS and
+// AxVisor, we keep their fields and loader/savers for future use.
+#[allow(dead_code)]
+impl VmLoadSaveStates {
+    /// Save the current FS and GS (including KERNEL_GS_BASE) bases.
+    #[inline(always)]
+    pub fn save_fs_gs(&mut self) {
+        self.fs_base = Msr::IA32_FS_BASE.read();
+        self.gs_base = Msr::IA32_GS_BASE.read();
+        self.kernel_gs_base = Msr::IA32_KERNEL_GSBASE.read();
     }
 
-    /// Enable extended processor state management instructions, including XGETBV and XSAVE.
-    pub fn enable_xsave() {
-        if Self::xsave_available() {
-            unsafe { Cr4::write(Cr4::read() | Cr4Flags::OSXSAVE) };
-        }
+    /// Save the current SYSENTER MSRs.
+    #[inline(always)]
+    pub fn save_sysenter(&mut self) {
+        self.sysenter_cs = Msr::IA32_SYSENTER_CS.read();
+        self.sysenter_esp = Msr::IA32_SYSENTER_ESP.read();
+        self.sysenter_eip = Msr::IA32_SYSENTER_EIP.read();
     }
 
-    /// Check if XSAVE is available on the current CPU.
-    pub fn xsave_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_feature_info()
-            .map(|f| f.has_xsave())
-            .unwrap_or(false)
+    /// Save the current SYSCALL MSRs.
+    #[inline(always)]
+    pub fn save_syscall(&mut self) {
+        self.star = Msr::IA32_STAR.read();
+        self.lstar = Msr::IA32_LSTAR.read();
+        self.cstar = Msr::IA32_CSTAR.read();
+        self.sfmask = Msr::IA32_FMASK.read();
     }
 
-    /// Check if XSAVES and XRSTORS (as well as IA32_XSS) are available on the current CPU.
-    pub fn xsaves_available() -> bool {
-        let cpuid = CpuId::new();
-        cpuid
-            .get_extended_state_info()
-            .map(|f| f.has_xsaves_xrstors())
-            .unwrap_or(false)
-    }
+    /// Save the current LDTR and TR registers.
+    #[inline(always)]
+    pub fn save_segs(&mut self) {
+        let ldtr: u16;
+        let tr: u16;
 
-    /// Save the current host XCR0 and IA32_XSS values and load the guest values.
-    pub fn switch_to_guest(&mut self) {
         unsafe {
-            if self.xsave_available {
-                self.host_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.guest_xcr0));
+            asm!(
+                "sldt {0:x}",
+                "str {1:x}",
+                out(reg) ldtr,
+                out(reg) tr,
+            );
+        }
 
-                if self.xsaves_available {
-                    self.host_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.guest_xss);
-                }
-            }
+        self.ldtr = ldtr;
+        self.tr = tr;
+    }
+
+    /// Save all VMLOAD/VMSAVE related states.
+    pub fn save_all(&mut self) {
+        self.save_fs_gs();
+        self.save_sysenter();
+        self.save_syscall();
+        self.save_segs();
+    }
+
+    /// Load the saved FS and GS (including KERNEL_GS_BASE) bases.
+    #[inline(always)]
+    pub fn load_fs_gs(&self) {
+        unsafe {
+            Msr::IA32_FS_BASE.write(self.fs_base);
+            Msr::IA32_GS_BASE.write(self.gs_base);
+            Msr::IA32_KERNEL_GSBASE.write(self.kernel_gs_base);
         }
     }
 
-    /// Save the current guest XCR0 and IA32_XSS values and load the host values.
-    pub fn switch_to_host(&mut self) {
+    /// Load the saved SYSENTER MSRs.
+    #[inline(always)]
+    pub fn load_sysenter(&self) {
         unsafe {
-            if self.xsave_available {
-                self.guest_xcr0 = xcr0_read().bits();
-                xcr0_write(Xcr0::from_bits_unchecked(self.host_xcr0));
-
-                if self.xsaves_available {
-                    self.guest_xss = Msr::IA32_XSS.read();
-                    Msr::IA32_XSS.write(self.host_xss);
-                }
-            }
+            Msr::IA32_SYSENTER_CS.write(self.sysenter_cs);
+            Msr::IA32_SYSENTER_ESP.write(self.sysenter_esp);
+            Msr::IA32_SYSENTER_EIP.write(self.sysenter_eip);
         }
+    }
+
+    /// Load the saved SYSCALL MSRs.
+    #[inline(always)]
+    pub fn load_syscall(&self) {
+        unsafe {
+            Msr::IA32_STAR.write(self.star);
+            Msr::IA32_LSTAR.write(self.lstar);
+            Msr::IA32_CSTAR.write(self.cstar);
+            Msr::IA32_FMASK.write(self.sfmask);
+        }
+    }
+
+    /// Load all VMLOAD/VMSAVE related states.
+    #[inline(always)]
+    pub fn load_segs(&self) {
+        let ldtr = self.ldtr;
+        let tr = self.tr;
+
+        unsafe {
+            asm!(
+                "lldt {0:x}",
+                "ltr {1:x}",
+                in(reg) ldtr,
+                in(reg) tr,
+            );
+        }
+    }
+
+    /// Load all VMLOAD/VMSAVE related states.
+    pub fn load_all(&self) {
+        self.load_fs_gs();
+        self.load_sysenter();
+        self.load_syscall();
+        self.load_segs();
+    }
+
+    /// Create a new [`VmLoadSaveStates`] instance from current hardware states.
+    pub fn new_from_hardware() -> Self {
+        let mut states = Self::default();
+        states.save_all();
+        states
     }
 }
 
@@ -136,9 +188,11 @@ pub struct SvmVcpu<H: AxVCpuHal> {
     // DO NOT modify `guest_regs` and `host_stack_top` and their order unless you do know what you are doing!
     // DO NOT add anything before or between them unless you do know what you are doing!
     guest_regs: GeneralRegisters,
+    #[allow(dead_code)] // actually used in asm!
     host_stack_top: u64,
     launched: bool,
     vmcb: VmcbFrame<H>,
+    load_save_states: VmLoadSaveStates,
     iopm: IOPm<H>,
     msrpm: MSRPm<H>,
     pending_events: VecDeque<(u8, Option<u32>)>,
@@ -156,6 +210,7 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
             host_stack_top: 0,
             launched: false,
             vmcb: VmcbFrame::new()?,
+            load_save_states: VmLoadSaveStates::default(),
             iopm: IOPm::passthrough_all()?,
             msrpm: MSRPm::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
@@ -230,7 +285,7 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
         }
 
         // Run guest
-        // self.load_guest_xstate();
+        self.load_guest_xstate();
 
         unsafe {
             self.svm_run();
@@ -238,9 +293,11 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
 
         self.load_host_xstate();
 
+        panic!("fall through after vmrun");
+
         // Handle vm-exits
         let exit_info = self.exit_info().unwrap();
-        // debug!("VM exit: {:#x?}", exit_info);
+        panic!("VM exit: {:#x?}", exit_info);
 
         match self.builtin_vmexit_handler(&exit_info) {
             Some(result) => {
@@ -351,34 +408,11 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
     }
 
     fn setup_vmcb(&mut self, entry: GuestPhysAddr, npt_root: HostPhysAddr) -> AxResult {
+        // Commented out because not implemented yet
+        // self.setup_io_bitmap()?;
+        // self.setup_msr_bitmap()?;
         self.setup_vmcb_guest(entry)?;
-        self.setup_vmcb_control(npt_root, true)?;
-
-        info!("VMCB:\n{}", self.vmcb.hex_dump());
-
-        let vm_hsave_pa = Msr::VM_HSAVE_PA.read();
-        let cr4 = Cr4::read();
-        let efer = EferFlags::from_bits_truncate(Msr::IA32_EFER.read());
-        info!(
-            "[AxVM] VMCB setup complete (HSAVE @ {:#x}, CR4: {:#x}, EFER: {:#x})",
-            vm_hsave_pa,
-            cr4.bits(),
-            efer.bits()
-        );
-
-        unsafe {
-            asm!(
-                "mov rax, {0}",
-                "vmload rax",
-                in(reg) self.vmcb.phys_addr().as_usize() as u64,
-            )
-        }
-
-        panic!(
-            "VMLOAD OK"
-        );
-
-        Ok(())
+        self.setup_vmcb_control(npt_root, true)
     }
 
     fn setup_vmcb_guest(&mut self, entry: GuestPhysAddr) -> AxResult {
@@ -410,12 +444,7 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
         seg!(gs, 0x93);
         seg!(ss, 0x93);
         seg!(ldtr, 0x82);
-        seg!(tr, 0x83);
-        
-        // st.ldtr.selector.set(0);
-        // st.ldtr.base.set(0);
-        // st.ldtr.limit.set(0);
-        // st.ldtr.attr.set(0x1000);
+        seg!(tr, 0x8b);
 
         // GDTR / IDTR
         st.gdtr.base.set(0);
@@ -429,8 +458,7 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
         st.rsp.set(0);
         st.rip.set(entry.as_usize() as u64);
         st.rflags.set(0x2); // bit1 必须为 1
-        st.dr6.set(0);
-        // st.dr6.set(0xffff0ff0); // Pending-DBG-Exceptions 对应 0
+        st.dr6.set(0xffff0ff0);
 
         // SYSENTER MSRs
         // st.sysenter_cs.set(0);
@@ -473,7 +501,8 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
         ct.clean_bits.set(0);
 
         // ⑤ TLB Control：0 = NONE, 1 = FLUSH-ASID, 3 = FLUSH-ALL
-        ct.tlb_control.modify(VmcbTlbControl::CONTROL::FlushGuestTlb);
+        ct.tlb_control
+            .modify(VmcbTlbControl::CONTROL::FlushGuestTlb);
 
         ct.int_control.set(1 << 24); // V_INTR_MASKING_MASK
 
@@ -567,55 +596,78 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
     //      0
     // }
 
-    pub unsafe fn svm_run(&mut self) -> usize {
+    /// Operations immediately before VMRUN instruction. This includes:
+    ///
+    /// 1. Disabling interrupts (CLGI)
+    /// 2. Syncing RAX from guest_regs to VMCB
+    /// 3. Saving host FS/GS related states
+    /// 4. `VMLOAD`ing the VMCB
+    #[inline(always)]
+    fn before_vmrun(&mut self) {
+        unsafe {
+            asm!("clgi");
+        }
+
+        unsafe { self.vmcb.as_vmcb().state.rax.set(self.regs().rax) };
+
+        self.load_save_states.save_fs_gs();
+
+        unsafe {
+            asm!(
+                "vmload rax",
+                in("rax") self.vmcb.phys_addr().as_usize() as u64,
+            );
+        }
+    }
+
+    /// Operations immediately after VMRUN instruction. This includes:
+    ///
+    /// 1. `VMSAVE`ing the VMCB
+    /// 2. Restoring host FS/GS related states
+    /// 3. Syncing RAX from VMCB to guest_regs
+    /// 4. Enabling interrupts (STGI)
+    #[inline(always)]
+    fn after_vmrun(&mut self) {
         let vmcb = self.vmcb.phys_addr().as_usize() as u64;
 
         unsafe {
             asm!(
-                "clgi",
-                "mov rax, {0}",
-                "vmload rax",
-                in(reg) vmcb,
-                // options(noreturn),
+                "vmsave rax",
+                in("rax") vmcb,
             );
         }
-        panic!("fall through after vmrun");
 
-        // let guest_regs = self.regs_mut();
+        self.load_save_states.load_fs_gs();
 
+        self.regs_mut().rax = unsafe { self.vmcb.as_vmcb().state.rax.get() };
+
+        unsafe {
+            asm!("stgi");
+        }
     }
 
-    // #[unsafe(naked)]
-    // unsafe extern "C" fn svm_entry() -> ! {
-    //     naked_asm!(
-    //         "ud2",
-    //         // "mov [rdi + {host_stack_size}], rsp",
-    //         // "mov rsp, rdi",
-    //         // // restore_regs_from_stack!(),
-    //         // "vmload rax",
-    //         // "vmrun rax",
-    //         "jmp {failed}",
-    //         // host_stack_size = const size_of::<GeneralRegisters>(),
-    //         failed = sym Self::svm_entry_failed,
-    //     )
-    // }
+    pub unsafe fn svm_run(&mut self) {
+        let vmcb = self.vmcb.phys_addr().as_usize() as u64;
 
-    /// Return after vm-exit.
-    ///
-    /// The return value is a dummy value.
-    #[unsafe(naked)]
-    unsafe extern fn svm_exit(&mut self) -> usize {
-        naked_asm!(
-            save_regs_to_stack!(),                  // save guest status
-            "mov    rsp, [rsp + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
-            restore_regs_from_stack!(),             // restore host status
-            "ret",
-            host_stack_top = const size_of::<GeneralRegisters>(),
-        );
-    }
+        self.before_vmrun();
 
-    fn svm_entry_failed() -> ! {
-        panic!("svm_entry_failed");
+        unsafe {
+            asm!(
+                save_regs_to_stack!(norax),             // Save host gpr except RAX, which holds vmcb pa
+                "mov [rdi + {host_stack_top}], rsp",    // Save current RSP to Vcpu::host_stack_top
+                "mov rsp, rdi",                         // Set RSP to guest_regs area
+                restore_regs_from_stack!(norax),        // Restore guest status except RAX
+                "vmrun rax",                            // Let's go!
+                save_regs_to_stack!(norax),             // Save guest gpr except RAX
+                "mov rdi, rsp",                         // Regain the pointer to VCpu struct
+                "mov rsp, [rdi + {host_stack_top}]",    // Restore host RSP from Vcpu::host_stack_top
+                restore_regs_from_stack!(norax),        // Restore host gpr except RAX
+                host_stack_top = const size_of::<GeneralRegisters>(),
+                in("rax") vmcb,
+            )
+        }
+
+        self.after_vmrun();
     }
 
     fn allow_interrupt(&self) -> bool {

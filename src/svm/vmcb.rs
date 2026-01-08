@@ -404,6 +404,7 @@ impl VmcbControlArea {
     }
 }
 
+#[derive(Debug)]
 pub struct SvmExitInfo {
     pub exit_code: core::result::Result<SvmExitCode, u64>,
     pub exit_info_1: u64,

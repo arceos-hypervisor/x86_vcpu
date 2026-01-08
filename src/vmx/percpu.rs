@@ -50,7 +50,7 @@ impl<H: AxVCpuHal> AxArchPerCpu for VmxPerCpuState<H> {
         }
 
         // Enable XSAVE/XRSTOR.
-        super::vcpu::XState::enable_xsave();
+        crate::xstate::enable_xsave();
 
         // Enable VMXON, if required.
         let ctrl = FeatureControl::read();
