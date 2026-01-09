@@ -1,6 +1,7 @@
 use alloc::collections::VecDeque;
 use axvisor_api::vmm::{VCpuId, VMId};
 use bit_field::BitField;
+use x86::io::outl;
 use core::arch::asm;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::naked_asm, mem::size_of};
@@ -184,6 +185,7 @@ impl VmLoadSaveStates {
     }
 }
 
+#[repr(C)]
 pub struct SvmVcpu<H: AxVCpuHal> {
     // DO NOT modify `guest_regs` and `host_stack_top` and their order unless you do know what you are doing!
     // DO NOT add anything before or between them unless you do know what you are doing!
@@ -292,8 +294,6 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
         }
 
         self.load_host_xstate();
-
-        panic!("fall through after vmrun");
 
         // Handle vm-exits
         let exit_info = self.exit_info().unwrap();
@@ -432,8 +432,12 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
 
         // CS: P S CODE READ (bit 7, 4, 3, 1) = 0x9a
         // seg!(cs, 0x9b);
-        st.cs.selector.set(0xf000);
-        st.cs.base.set(0xffff0000);
+        // st.cs.selector.set(0xf000);
+        // st.cs.base.set(0xffff0000);
+        // st.cs.limit.set(0xffff);
+        // st.cs.attr.set(0x9b);
+        st.cs.selector.set(0);
+        st.cs.base.set(0);
         st.cs.limit.set(0xffff);
         st.cs.attr.set(0x9b);
 
@@ -647,6 +651,7 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
     }
 
     pub unsafe fn svm_run(&mut self) {
+        let self_addr = self as *mut Self as u64;
         let vmcb = self.vmcb.phys_addr().as_usize() as u64;
 
         self.before_vmrun();
@@ -664,6 +669,7 @@ impl<H: AxVCpuHal> SvmVcpu<H> {
                 restore_regs_from_stack!(norax),        // Restore host gpr except RAX
                 host_stack_top = const size_of::<GeneralRegisters>(),
                 in("rax") vmcb,
+                in("rdi") self_addr,
             )
         }
 

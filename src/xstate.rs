@@ -57,6 +57,7 @@ impl XRegs {
     pub fn load(&self, avail: XAvailable) {
         unsafe {
             if avail.xsave {
+                // info!("Loading XCR0: {:#x}", self.xcr0);
                 xcr0_write(Xcr0::from_bits_unchecked(self.xcr0));
 
                 if avail.xsaves {
@@ -100,13 +101,19 @@ impl XState {
 
     /// Save the current host XCR0 and IA32_XSS values and load the guest values.
     pub fn switch_to_guest(&mut self) {
+        // info!("Switching to guest xstate");
         self.host.save(self.avail);
+        // info!("Host xstate saved: {:?}", self.host);
+        // info!("Guest xstate loading: {:?}", self.guest);
         self.guest.load(self.avail);
     }
 
     /// Save the current guest XCR0 and IA32_XSS values and load the host values.
     pub fn switch_to_host(&mut self) {
+        // info!("Switching to host xstate");
         self.guest.save(self.avail);
+        // info!("Guest xstate saved: {:?}", self.guest);
+        // info!("Host xstate loading: {:?}", self.host);
         self.host.load(self.avail);
     }
 }
