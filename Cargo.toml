@@ -23,16 +23,16 @@ x86_64 = "0.15"
 raw-cpuid = "11.0"
 numeric-enum-macro = "0.2"
 
-axerrno = "0.1.0"
+axerrno = "0.2.0"
 page_table_entry = "0.5"
 memory_addr = "0.4"
-crate_interface = "0.1"
+crate_interface = "0.2"
 
-axaddrspace = "0.1.0"
-axvcpu = "0.1.0"
+axaddrspace = "0.2.0"
+axvcpu = "0.1.2"
 x86_vlapic = "0.1.0"
 axdevice_base = "0.1.0"
-axvisor_api = "0.1.0"
+axvisor_api = "0.2.0"
 
 spin = { version = "0.9", default-features = false }
 
@@ -41,3 +41,10 @@ default = ["vmx"]
 tracing = []
 vmx = []
 svm = []
+
+[patch.crates-io]
+axvcpu = { git = "https://github.com/arceos-hypervisor/axvcpu", branch = "aar-master" }
+axvisor_api = { git = "https://github.com/arceos-hypervisor/axvisor_api", branch = "aar-master" }
+axaddrspace = { git = "https://github.com/arceos-hypervisor/axaddrspace", branch = "aar-master" }
+axdevice_base = { git = "https://github.com/arceos-hypervisor/axdevice_crates", branch = "aar-master"}
+x86_vlapic = { git = "https://github.com/arceos-hypervisor/x86_vlapic", branch = "aar-master"}
