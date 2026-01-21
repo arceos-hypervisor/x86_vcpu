@@ -1220,20 +1220,25 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
                         return None;
                     }
 
-                    if x.contains(Xcr0::XCR0_OPMASK_STATE)
+                    if (x.contains(Xcr0::XCR0_OPMASK_STATE)
                         || x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
-                        || x.contains(Xcr0::XCR0_HI16_ZMM_STATE)
-                        || !x.contains(Xcr0::XCR0_AVX_STATE)
+                        || x.contains(Xcr0::XCR0_HI16_ZMM_STATE))
+                        && (!x.contains(Xcr0::XCR0_AVX_STATE)
                         || !x.contains(Xcr0::XCR0_OPMASK_STATE)
                         || !x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
-                        || !x.contains(Xcr0::XCR0_HI16_ZMM_STATE)
+                            || !x.contains(Xcr0::XCR0_HI16_ZMM_STATE))
                     {
                         return None;
                     }
 
                     Some(x)
                 })
-                .ok_or(ax_err_type!(InvalidInput))
+                .ok_or_else(|| {
+                    ax_err_type!(
+                        InvalidInput,
+                        format_args!("invalid xcr0 value: {:#x}", value)
+                    )
+                })
                 .and_then(|x| {
                     self.xstate.guest_xcr0 = x.bits();
                     self.advance_rip(VM_EXIT_INSTR_LEN_XSETBV)
