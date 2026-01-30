@@ -9,6 +9,8 @@ extern crate alloc;
 
 #[cfg(test)]
 mod test_utils;
+#[cfg(test)]
+mod tests;
 
 pub(crate) mod msr;
 #[macro_use]

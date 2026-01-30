@@ -1,0 +1,163 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-pre.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -D missing-docs
+
+jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+
+  test:
+    uses: ./.github/workflows/test.yml
+    needs: check
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and branch (HEAD-based)
+        shell: bash
+        run: |
+          set -e
+
+          TAG="${{ github.ref_name }}"
+          TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+
+          git fetch origin master dev || git fetch origin master
+
+          MASTER_HEAD=$(git rev-parse origin/master)
+          DEV_HEAD=$(git rev-parse origin/dev 2>/dev/null || echo "")
+
+          echo "Tag:        $TAG"
+          echo "Tag commit: $TAG_COMMIT"
+          echo "master HEAD: $MASTER_HEAD"
+          echo "dev HEAD:   $DEV_HEAD"
+
+          if [[ "$TAG" == *-pre.* ]]; then
+            if [ -n "$DEV_HEAD" ] && [ "$TAG_COMMIT" != "$DEV_HEAD" ]; then
+              echo "❌ prerelease tag must be created from dev HEAD"
+              exit 1
+            fi
+            echo "✅ prerelease tag validated"
+          else
+            if [ "$TAG_COMMIT" != "$MASTER_HEAD" ]; then
+              echo "❌ stable release tag must be created from master HEAD"
+              exit 1
+            fi
+            echo "✅ stable release tag validated on master"
+          fi
+
+      - name: Verify version consistency
+        run: |
+          # Extract version from git tag (remove 'v' prefix)
+          TAG_VERSION="${{ github.ref_name }}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          # Extract version from Cargo.toml
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          echo "Git tag version: $TAG_VERSION"
+          echo "Cargo.toml version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "ERROR: Version mismatch! Tag version ($TAG_VERSION) != Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "Version check passed!"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-pre.') }}
+          body: |
+            ## ${{ github.ref_name }}
+
+            - [Documentation](https://docs.rs/x86_vcpu)
+            - [crates.io](https://crates.io/crates/x86_vcpu)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and branch (HEAD-based)
+        shell: bash
+        run: |
+          set -e
+
+          TAG="${{ github.ref_name }}"
+          TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+
+          git fetch origin master dev || git fetch origin master
+
+          MASTER_HEAD=$(git rev-parse origin/master)
+          DEV_HEAD=$(git rev-parse origin/dev 2>/dev/null || echo "")
+
+          echo "Tag:        $TAG"
+          echo "Tag commit: $TAG_COMMIT"
+          echo "master HEAD: $MASTER_HEAD"
+          echo "dev HEAD:   $DEV_HEAD"
+
+          if [[ "$TAG" == *-pre.* ]]; then
+            if [ -n "$DEV_HEAD" ] && [ "$TAG_COMMIT" != "$DEV_HEAD" ]; then
+              echo "❌ prerelease tag must be created from dev HEAD"
+              exit 1
+            fi
+            echo "✅ prerelease tag validated"
+          else
+            if [ "$TAG_COMMIT" != "$MASTER_HEAD" ]; then
+              echo "❌ stable release tag must be created from master HEAD"
+              exit 1
+            fi
+            echo "✅ stable release tag validated on master"
+          fi
+
+      - name: Verify version consistency
+        run: |
+          # Extract version from git tag (remove 'v' prefix)
+          TAG_VERSION="${{ github.ref_name }}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          # Extract version from Cargo.toml
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          echo "Git tag version: $TAG_VERSION"
+          echo "Cargo.toml version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "ERROR: Version mismatch! Tag version ($TAG_VERSION) != Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "Version check passed!"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-05-20
+
+      - name: Dry run publish
+        run: cargo publish --dry-run
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
