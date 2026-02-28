@@ -33,11 +33,16 @@ axvcpu = "0.2"
 x86_vlapic = "0.2.1"
 axdevice_base = "0.2.1"
 axvisor_api = "0.1.0"
+tock-registers = "0.10"
 
 spin = { version = "0.9", default-features = false }
 
+[dev-dependencies]
+memoffset = "0.9"
+
 [features]
-default = ["vmx"]
+default = ["svm"]
+# default = ["vmx"]
 tracing = []
 vmx = []
 svm = []

@@ -16,3 +16,5 @@ rusty-tags.vi
 
 # We ignore Cargo.lock because `axvcpu` is just a library
 Cargo.lock
+
+tmp/
