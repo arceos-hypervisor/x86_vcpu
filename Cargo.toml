@@ -34,7 +34,7 @@ x86_vlapic = "0.2.2"
 axdevice_base = "0.2.2"
 axvisor_api = "0.3"
 
-spin = { version = "0.10", default-features = false }
+spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
 
 [features]
 default = ["vmx"]

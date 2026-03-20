@@ -21,9 +21,6 @@ extern crate log;
 
 extern crate alloc;
 
-#[cfg(test)]
-mod test_utils;
-
 pub(crate) mod msr;
 #[macro_use]
 pub(crate) mod regs;

@@ -1,94 +1,110 @@
-# x86_vcpu
+<h1 align="center">x86_vcpu</h1>
 
-[![CI](https://github.com/arceos-hypervisor/x86_vcpu/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/arceos-hypervisor/x86_vcpu/actions/workflows/ci.yml)
+<p align="center">x86 Virtual CPU Implementation for ArceOS Hypervisor</p>
 
-Definition of the vCPU structure and virtualization-related interface support for x86_64 architecture.
+<div align="center">
 
-The crate user must implement the `AxVCpuHal` trait to provide the required low-level implementantion, 
-relevant implementation can refer to [axvcpu](https://github.com/arceos-hypervisor/axvcpu/blob/main/src/hal.rs). **[Work in Progress]**
+[![Crates.io](https://img.shields.io/crates/v/x86_vcpu.svg)](https://crates.io/crates/x86_vcpu)
+[![Docs.rs](https://docs.rs/x86_vcpu/badge.svg)](https://docs.rs/x86_vcpu)
+[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/arceos-hypervisor/x86_vcpu/blob/main/LICENSE)
 
-## Features
+</div>
 
-- **VMX Support**: Complete Intel VT-x virtualization support
-- **SVM Support**: AMD SVM (Secure Virtual Machine) virtualization support (feature flag `svm`)
-- **Register Management**: Comprehensive x86 register state management
-- **EPT (Extended Page Tables)**: Memory virtualization support
-- **MSR Handling**: Model-Specific Register access and management
-- **VMCS Management**: Virtual Machine Control Structure operations
-- **Interrupt Handling**: Virtual interrupt and exception processing
-- **Tracing Support**: Optional tracing for debugging (feature flag `tracing`)
+English | [中文](README_CN.md)
 
-## Architecture
+# Introduction
 
-The library is structured into several key modules:
+`x86_vcpu` provides the x86_64 virtual CPU implementation for the ArceOS hypervisor stack. It focuses on VMX-based virtualization support, register state management, guest page-walk helpers, and VM-exit related data structures for hypervisor components built on top of `axvcpu`.
 
-### Core Components
+This library exports the following core public types and functions:
 
-- **`vmx/`**: Intel VMX virtualization implementation
-  - `vcpu.rs`: Virtual CPU implementation ([`VmxArchVCpu`](src/vmx/vcpu.rs))
-  - `vmcs.rs`: VMCS (Virtual Machine Control Structure) management
-  - `percpu.rs`: Per-CPU state management ([`VmxArchPerCpuState`](src/vmx/percpu.rs))
-  - `definitions.rs`: VMX constants and exit reasons
-  - `instructions.rs`: VMX instruction wrappers
-  - `structs.rs`: VMX data structures
+- **`VmxArchVCpu`** - VMX-based architecture-specific VCpu implementation
+- **`VmxArchPerCpuState`** - Per-CPU virtualization state for VMX
+- **`GeneralRegisters`** - x86_64 general-purpose register set abstraction
+- **`GuestPageWalkInfo`** - Guest page-walk information used by EPT-related logic
+- **`has_hardware_support()`** - Detects whether x86 virtualization support is available
 
-- **`regs/`**: Register management
-  - `accessors.rs`: Register access utilities
-  - `diff.rs`: Register state comparison
-  - `mod.rs`: General-purpose registers ([`GeneralRegisters`](src/regs/mod.rs))
+When the `vmx` feature is enabled, the crate also exports VMX exit and interrupt helper types such as `VmxExitInfo`, `VmxExitReason`, `VmxInterruptInfo`, and `VmxIoExitInfo`.
 
-- **`ept.rs`**: Extended Page Tables implementation
-- **`msr.rs`**: Model-Specific Register handling
+## Quick Start
 
-### Key Types
+### Requirements
 
-- [`VmxArchVCpu`](src/vmx/vcpu.rs): Main virtual CPU implementation
-- [`VmxArchPerCpuState`](src/vmx/percpu.rs): Per-CPU virtualization state
-- [`GeneralRegisters`](src/regs/mod.rs): x86-64 general-purpose registers
-- [`VmxExitReason`](src/vmx/definitions.rs): VM exit reason enumeration
-- [`GuestPageWalkInfo`](src/ept.rs): Guest page walk information
+- Rust nightly toolchain
+- Rust components: rust-src, clippy, rustfmt
 
-### Basic Example
+```bash
+# Install rustup (if not installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-```rust
+# Install nightly toolchain and components
+rustup install nightly
+rustup component add rust-src clippy rustfmt --toolchain nightly
+```
+
+### Run Check and Test
+
+```bash
+# 1. Enter the repository
+cd x86_vcpu
+
+# 2. Code check
+./scripts/check.sh
+
+# 3. Run tests
+./scripts/test.sh
+```
+
+## Integration
+
+### Installation
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+x86_vcpu = "0.3.0"
+```
+
+### Example
+
+```rust,ignore
 use x86_vcpu::{has_hardware_support, GeneralRegisters};
 
-// Check if VMX is supported on this hardware
-if has_hardware_support() {
-    println!("VMX hardware support detected");
-} else {
-    println!("VMX hardware support not available");
-}
+fn main() {
+    let vmx_available = has_hardware_support();
+    println!("VMX available: {}", vmx_available);
 
-// Create and initialize guest registers
-let mut regs = GeneralRegisters::default();
-regs.rax = 0x1234;
-regs.rbx = 0x5678;
+    let mut regs = GeneralRegisters::default();
+    regs.rax = 0x1234;
+    regs.rbx = 0x5678;
+    regs.rcx = 0x1000;
+    regs.rdx = 0x2;
 
-println!("Guest registers initialized:");
-println!("RAX: {:#x}", regs.rax);
-println!("RBX: {:#x}", regs.rbx);
-
-// Display register names
-for (i, name) in GeneralRegisters::REGISTER_NAMES.iter().enumerate() {
-    println!("Register {}: {}", i, name);
+    assert_eq!(regs.rax, 0x1234);
+    assert_eq!(regs.rbx, 0x5678);
+    assert_eq!(GeneralRegisters::register_name(0), "rax");
 }
 ```
 
-## Features
+### Documentation
 
-The library supports the following Cargo features:
+Generate and view API documentation:
 
-- **`default`**: Enables VMX support by default
-- **`vmx`**: Intel VMX (VT-x) support
-- **`svm`**: AMD SVM support
-- **`tracing`**: Enable tracing for debugging
+```bash
+cargo doc --no-deps --open
+```
 
-## Related Projects 
+Online documentation: [docs.rs/x86_vcpu](https://docs.rs/x86_vcpu)
 
-+ [ArceOS](https://github.com/arceos-org/arceos) - An experimental modular OS (or Unikernel)
-+ [AxVisor](https://github.com/arceos-hypervisor/axvisor) - Hypervisor implementation
+# Contributing
 
-## License
+1. Fork the repository and create a branch
+2. Run local check: `./scripts/check.sh`
+3. Run local tests: `./scripts/test.sh`
+4. Submit PR and pass CI checks
 
-X86_vcpu is licensed under the Apache License, Version 2.0. See the [LICENSE](./LICENSE) file for details.
+# License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](https://github.com/arceos-hypervisor/x86_vcpu/blob/main/LICENSE) for details.

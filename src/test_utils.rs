@@ -156,28 +156,3 @@ pub mod mock {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::test_utils::mock::MockMmHal;
-    use axvisor_api::memory::MemoryIf;
-
-    #[test]
-    fn test_mock_allocator() {
-        MockMmHal::reset();
-
-        // Test multiple allocations return different addresses
-        let addr1 = MockMmHal::alloc_frame().unwrap();
-        let addr2 = MockMmHal::alloc_frame().unwrap();
-        let addr3 = MockMmHal::alloc_frame().unwrap();
-
-        assert_ne!(addr1.as_usize(), addr2.as_usize());
-        assert_ne!(addr2.as_usize(), addr3.as_usize());
-        assert_ne!(addr1.as_usize(), addr3.as_usize());
-
-        // Addresses should be page-aligned
-        assert_eq!(addr1.as_usize() % 0x1000, 0);
-        assert_eq!(addr2.as_usize() % 0x1000, 0);
-        assert_eq!(addr3.as_usize() % 0x1000, 0);
-    }
-}

@@ -19,12 +19,23 @@ mod structs;
 mod vcpu;
 mod vmcs;
 
-use self::structs::VmxBasic;
+use self::structs::VmxBasic as VmxBasicInner;
 use axerrno::ax_err_type;
 
 pub use self::definitions::VmxExitReason;
 pub use self::percpu::VmxPerCpuState as VmxArchPerCpuState;
+#[cfg(test)]
+pub(crate) use self::percpu::VmxPerCpuState;
+#[cfg(test)]
+pub(crate) use self::structs::{
+    EPTPointer, FeatureControlFlags, IOBitmap, MsrBitmap, VmxBasic, VmxRegion,
+};
 pub use self::vcpu::VmxVcpu as VmxArchVCpu;
+#[cfg(test)]
+pub(crate) use self::vcpu::{
+    CR0_PE, MSR_IA32_EFER_LMA_BIT, QEMU_EXIT_MAGIC, QEMU_EXIT_PORT, VMX_PREEMPTION_TIMER_SET_VALUE,
+    VmCpuMode,
+};
 pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
 
 /// Return if current platform support virtualization extension.
@@ -37,7 +48,7 @@ pub fn has_hardware_support() -> bool {
 }
 
 pub fn read_vmcs_revision_id() -> u32 {
-    VmxBasic::read().revision_id
+    VmxBasicInner::read().revision_id
 }
 
 fn as_axerr(err: x86::vmx::VmFail) -> axerrno::AxError {
