@@ -11,5 +11,26 @@ on:
   workflow_dispatch:
 
 jobs:
+  prepare:
+    name: Prepare Config
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.config.outputs.targets }}
+      unit_test_targets: ${{ steps.config.outputs.unit_test_targets }}
+      rust_components: ${{ steps.config.outputs.rust_components }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: config
+        run: |
+          CONFIG=$(cat .github/config.json)
+          echo "targets=$(echo $CONFIG | jq -c '.targets')" >> "$GITHUB_OUTPUT"
+          echo "unit_test_targets=$(echo $CONFIG | jq -c '.unit_test_targets')" >> "$GITHUB_OUTPUT"
+          echo "rust_components=$(echo $CONFIG | jq -r '.rust_components | join(", ")')" >> "$GITHUB_OUTPUT"
+
   check:
+    needs: prepare
     uses: arceos-hypervisor/axci/.github/workflows/check.yml@main
+    with:
+      targets: ${{ needs.prepare.outputs.targets }}
+      unit_test_targets: ${{ needs.prepare.outputs.unit_test_targets }}
+      rust_components: ${{ needs.prepare.outputs.rust_components }}
