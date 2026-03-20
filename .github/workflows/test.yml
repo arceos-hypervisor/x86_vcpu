@@ -1,7 +1,6 @@
 # Integration Test Workflow
 # References shared workflow from axci
 #
-#
 
 name: Test
 
