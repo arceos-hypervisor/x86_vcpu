@@ -1642,6 +1642,30 @@ impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
         Ok(())
     }
 
+    fn set_ept_violation_ve(&mut self, enable: bool, ve_info_hpa: HostPhysAddr) -> AxResult {
+        use super::vmcs::controls::SecondaryControls as CpuCtrl2;
+
+        let mut controls =
+            CpuCtrl2::from_bits_truncate(VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS.read()?);
+        controls.set(CpuCtrl2::EPT_VIOLATION_VE, enable);
+
+        vmcs::set_control(
+            VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
+            Msr::IA32_VMX_PROCBASED_CTLS2,
+            Msr::IA32_VMX_PROCBASED_CTLS2.read() as u32,
+            controls.bits(),
+            0,
+        )?;
+        VmcsControl64::VIRT_EXCEPTION_INFO_ADDR.write(ve_info_hpa.as_usize() as u64)?;
+
+        debug!(
+            "VMX #VE delivery {} with info area @ {:#x}",
+            if enable { "enabled" } else { "disabled" },
+            ve_info_hpa
+        );
+        Ok(())
+    }
+
     fn eptp_list_region(&self) -> HostPhysAddr {
         self.eptp_list.phys_addr()
     }
