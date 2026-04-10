@@ -255,3 +255,19 @@ impl<H: AxVCpuHal> EptpList<H> {
         self.frame.start_paddr()
     }
 }
+
+pub(super) struct VEInformationArea<H: AxVCpuHal> {
+    frame: PhysFrame<H>,
+}
+
+impl<H: AxVCpuHal> VEInformationArea<H> {
+    pub fn new() -> AxResult<Self> {
+        Ok(Self {
+            frame: PhysFrame::alloc_zero()?,
+        })
+    }
+
+    pub fn phys_addr(&self) -> HostPhysAddr {
+        self.frame.start_paddr()
+    }
+}

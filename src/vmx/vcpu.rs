@@ -25,7 +25,7 @@ use super::VmxExitInfo;
 use super::as_axerr;
 use super::definitions::VmxExitReason;
 use super::read_vmcs_revision_id;
-use super::structs::{EptpList, IOBitmap, MsrBitmap, VmxRegion};
+use super::structs::{EptpList, IOBitmap, MsrBitmap, VEInformationArea, VmxRegion};
 use super::vmcs::{
     self, VmcsControl16, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32,
     VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW, exit_qualification,
@@ -66,7 +66,7 @@ pub struct VmxVcpu<H: AxVCpuHal> {
     io_bitmap: IOBitmap<H>,
     msr_bitmap: MsrBitmap<H>,
     eptp_list: EptpList<H>,
-
+    ve_information_area: VEInformationArea<H>,
     pending_events: VecDeque<(u8, Option<u32>)>,
     // xstate: XState,
     xstate: XState,
@@ -87,6 +87,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             io_bitmap: IOBitmap::passthrough_all()?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
             eptp_list: EptpList::new()?,
+            ve_information_area: VEInformationArea::new()?,
             pending_events: VecDeque::with_capacity(8),
             xstate: XState::new(),
             entry: None,
@@ -456,6 +457,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         ept_root: HostPhysAddr,
         entry: Option<GuestPhysAddr>,
         ctx: Option<LinuxContext>,
+        enable_ve: bool,
     ) -> AxResult {
         let mut is_guest = true;
 
@@ -475,7 +477,7 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             })?)?;
         }
 
-        self.setup_vmcs_control(ept_root, is_guest)?;
+        self.setup_vmcs_control(ept_root, is_guest, enable_ve)?;
         self.set_vpid(self.id as u16 + 1)?;
         self.unbind_from_current_processor()?;
         Ok(())
@@ -640,7 +642,12 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         Ok(())
     }
 
-    fn setup_vmcs_control(&mut self, ept_root: HostPhysAddr, is_guest: bool) -> AxResult {
+    fn setup_vmcs_control(
+        &mut self,
+        ept_root: HostPhysAddr,
+        is_guest: bool,
+        enable_ve: bool,
+    ) -> AxResult {
         // Intercept NMI and external interrupts.
         use super::vmcs::controls::*;
         use PinbasedControls as PinCtrl;
@@ -705,6 +712,9 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
 
         // Enable VPID to speed up `VMFUNC` operation.
         val |= CpuCtrl2::ENABLE_VPID;
+        if enable_ve {
+            val |= CpuCtrl2::EPT_VIOLATION_VE;
+        }
 
         vmcs::set_control(
             VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
@@ -713,6 +723,8 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
             val.bits(),
             0,
         )?;
+        VmcsControl64::VIRT_EXCEPTION_INFO_ADDR
+            .write(self.ve_information_area.phys_addr().as_usize() as u64)?;
 
         // Switch to 64-bit host, acknowledge interrupt info, switch IA32_PAT/IA32_EFER on VM exit.
         use ExitControls as ExitCtrl;
@@ -1411,12 +1423,12 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
     }
 
     fn setup(&mut self, _config: Self::SetupConfig) -> AxResult {
-        self.setup_vmcs(self.ept_root.unwrap(), self.entry, None)
+        self.setup_vmcs(self.ept_root.unwrap(), self.entry, None, false)
     }
 
-    fn setup_from_context(&mut self, ctx: Self::HostContext) -> AxResult {
+    fn setup_from_context(&mut self, ctx: Self::HostContext, enable_ve: bool) -> AxResult {
         self.guest_regs.load_from_context(&ctx);
-        self.setup_vmcs(self.ept_root.unwrap(), None, Some(ctx))
+        self.setup_vmcs(self.ept_root.unwrap(), None, Some(ctx), enable_ve)
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
@@ -1642,28 +1654,8 @@ impl<H: AxVCpuHal> AxVcpuAccessGuestState for VmxVcpu<H> {
         Ok(())
     }
 
-    fn set_ept_violation_ve(&mut self, enable: bool, ve_info_hpa: HostPhysAddr) -> AxResult {
-        use super::vmcs::controls::SecondaryControls as CpuCtrl2;
-
-        let mut controls =
-            CpuCtrl2::from_bits_truncate(VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS.read()?);
-        controls.set(CpuCtrl2::EPT_VIOLATION_VE, enable);
-
-        vmcs::set_control(
-            VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
-            Msr::IA32_VMX_PROCBASED_CTLS2,
-            Msr::IA32_VMX_PROCBASED_CTLS2.read() as u32,
-            controls.bits(),
-            0,
-        )?;
-        VmcsControl64::VIRT_EXCEPTION_INFO_ADDR.write(ve_info_hpa.as_usize() as u64)?;
-
-        debug!(
-            "VMX #VE delivery {} with info area @ {:#x}",
-            if enable { "enabled" } else { "disabled" },
-            ve_info_hpa
-        );
-        Ok(())
+    fn get_ve_information_area(&self) -> HostPhysAddr {
+        self.ve_information_area.phys_addr()
     }
 
     fn eptp_list_region(&self) -> HostPhysAddr {
