@@ -1526,6 +1526,19 @@ impl<H: AxVCpuHal> AxArchVCpu for VmxVcpu<H> {
                             access_flags: ept_info.access_flags,
                         }
                     }
+                    VmxExitReason::EPT_MISCONFIG => {
+                        let guest_paddr = vmcs::guest_physical_address()?;
+                        let guest_linear = vmcs::guest_linear_address().ok();
+                        let qualification = exit_qualification().ok();
+
+                        error!(
+                            "EPT misconfiguration @ RIP {:#x}, GPA {:?}, GLA {:?}, qualification {:?}",
+                            exit_info.guest_rip, guest_paddr, guest_linear, qualification
+                        );
+                        warn!("VMX unsupported VM-Exit: {:#x?}", exit_info);
+                        warn!("VCpu {:#x?}", self);
+                        AxVCpuExitReason::Halt
+                    }
                     VmxExitReason::TRIPLE_FAULT => {
                         error!("VMX triple fault: {:#x?}", exit_info);
                         error!("VCpu {:#x?}", self);

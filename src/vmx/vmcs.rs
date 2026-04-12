@@ -7,7 +7,7 @@ use bit_field::BitField;
 use x86::bits64::vmx;
 
 use axaddrspace::npt::EPTPointer;
-use axaddrspace::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo};
+use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, NestedPageFaultInfo};
 use axerrno::{AxResult, ax_err};
 use page_table_entry::MappingFlags;
 
@@ -728,6 +728,18 @@ pub fn ept_violation_info() -> AxResult<NestedPageFaultInfo> {
         access_flags,
         fault_guest_paddr: GuestPhysAddr::from(fault_guest_paddr),
     })
+}
+
+pub fn guest_physical_address() -> AxResult<GuestPhysAddr> {
+    Ok(GuestPhysAddr::from(
+        VmcsReadOnly64::GUEST_PHYSICAL_ADDR.read()? as usize,
+    ))
+}
+
+pub fn guest_linear_address() -> AxResult<GuestVirtAddr> {
+    Ok(GuestVirtAddr::from(
+        VmcsReadOnlyNW::GUEST_LINEAR_ADDR.read()? as usize,
+    ))
 }
 
 pub fn update_efer() -> AxResult {
