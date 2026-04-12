@@ -379,7 +379,10 @@ impl<H: AxVCpuHal> VmxVcpu<H> {
         let mut formattor = IntelFormatter::new();
         formattor.format(&instr, &mut output);
 
-        warn!("Decoded instruction @Intel formatter: {}", output);
+        warn!(
+            "Decoded {:#x?}instruction @Intel formatter: {}",
+            bytes, output
+        );
         Ok(())
     }
 }
